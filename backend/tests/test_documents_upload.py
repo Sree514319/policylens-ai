@@ -28,6 +28,24 @@ def test_valid_pdf_upload_returns_metadata(client, valid_pdf_bytes):
     # The response must never contain the complete extracted text.
     assert "page two" not in body["preview"]
 
+    # Phase 3: chunk/page summary counts are present...
+    assert body["chunk_count"] == 2  # one short chunk per page at default chunk_size
+    assert body["pages_with_text"] == 2
+
+    # ...but no field anywhere carries full chunk/page text.
+    assert set(body.keys()) == {
+        "document_id",
+        "filename",
+        "page_count",
+        "character_count",
+        "status",
+        "preview",
+        "chunk_count",
+        "pages_with_text",
+    }
+    assert "chunks" not in body
+    assert "page two" not in str(body)
+
 
 def test_non_pdf_extension_rejected(client):
     response = client.post(

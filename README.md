@@ -6,9 +6,9 @@ fact-checked answers — generated and cross-validated by both **Anthropic
 Claude** and **OpenAI GPT** models — alongside transparent accuracy,
 latency, and cost metrics.
 
-> **Status:** 🚧 Active development. Project foundation and the secure PDF
-> ingestion endpoint are implemented; retrieval, LLM integration, and the
-> frontend are not yet built.
+> **Status:** 🚧 Active development. Project foundation, secure PDF
+> ingestion, and deterministic text chunking are implemented; vector
+> retrieval, LLM integration, and the frontend are not yet built.
 
 ---
 
@@ -135,7 +135,8 @@ policylens-ai/
 │   │   ├── services/
 │   │   │   ├── llm/            # Claude / OpenAI client wrappers, comparison logic
 │   │   │   ├── ingestion/
-│   │   │   │   └── pdf_processor.py  # PDF validation & text extraction (PyMuPDF)
+│   │   │   │   ├── pdf_processor.py  # PDF validation & text extraction (PyMuPDF)
+│   │   │   │   └── text_chunker.py   # Deterministic, page-aware chunking & citation IDs
 │   │   │   ├── retrieval/      # ChromaDB indexing & semantic search, citations
 │   │   │   ├── privacy/        # PII/sensitive-data detection & masking
 │   │   │   └── evaluation/     # Unsupported-claim detection, accuracy, latency, cost
@@ -169,19 +170,23 @@ This repository is being built incrementally. Planned phases:
 - [x] **Phase 2 — Secure PDF ingestion**: `POST /api/v1/documents/upload`,
       PyMuPDF-based validation and text extraction, in-memory processing
       only (see [API Reference](#7-api-reference) below).
-- [ ] **Phase 3 — Vector store & retrieval**: ChromaDB integration,
-      embedding pipeline, semantic search with citation metadata.
-- [ ] **Phase 4 — LLM integration**: Claude and OpenAI client wrappers,
+- [x] **Phase 3 — Deterministic text chunking**: page-aware, word-boundary
+      chunking with configurable size/overlap, deterministic chunk IDs,
+      and citation metadata (see [Text Chunking](#8-text-chunking) below).
+- [ ] **Phase 4 — Vector store & retrieval**: ChromaDB integration,
+      embedding pipeline, semantic search over the chunks produced in
+      Phase 3.
+- [ ] **Phase 5 — LLM integration**: Claude and OpenAI client wrappers,
       prompt templates, concurrent dual-model querying.
-- [ ] **Phase 5 — Privacy layer**: sensitive-information detection and
+- [ ] **Phase 6 — Privacy layer**: sensitive-information detection and
       masking applied before display/storage/outbound calls.
-- [ ] **Phase 6 — Evaluation layer**: unsupported-claim detection,
+- [ ] **Phase 7 — Evaluation layer**: unsupported-claim detection,
       accuracy scoring, latency and cost tracking.
-- [ ] **Phase 7 — Frontend**: Streamlit upload flow, chat interface,
+- [ ] **Phase 8 — Frontend**: Streamlit upload flow, chat interface,
       model comparison view, metrics dashboard.
-- [ ] **Phase 8 — Testing**: pytest unit/integration coverage across
+- [ ] **Phase 9 — Testing**: consolidated pytest coverage review across
       services and API routes.
-- [ ] **Phase 9 — Containerization & deployment**: Dockerfiles, compose
+- [ ] **Phase 10 — Containerization & deployment**: Dockerfiles, compose
       setup, deployment documentation.
 
 ### Local setup
@@ -250,7 +255,9 @@ metadata — never the full document text.
   "page_count": 12,
   "character_count": 24831,
   "status": "processed",
-  "preview": "First ~200 characters of the extracted text..."
+  "preview": "First ~200 characters of the extracted text...",
+  "chunk_count": 34,
+  "pages_with_text": 12
 }
 ```
 
@@ -261,6 +268,9 @@ metadata — never the full document text.
   stripped) before being echoed back.
 - `preview` is capped at ~200 characters — the full extracted text is
   never returned in the response and never written to logs.
+- `chunk_count` and `pages_with_text` summarize the Phase 3 chunking pass
+  (see [Text Chunking](#8-text-chunking) below) — the chunks themselves,
+  and their text, are never included in the response.
 
 **Error responses:**
 
@@ -269,12 +279,80 @@ metadata — never the full document text.
 | `400`  | Wrong extension, wrong content type, invalid PDF signature, or empty file |
 | `413`  | File exceeds the configured maximum upload size        |
 | `422`  | File is corrupted, unparsable, or encrypted/password-protected |
-| `500`  | Unexpected internal error (generic message only — no stack traces or file paths are ever exposed) |
+| `500`  | Unexpected internal error, including an invalid chunking configuration (generic message only — no stack traces or file paths are ever exposed) |
 
 Uploaded PDFs are processed entirely in memory for this phase; nothing is
 written to disk.
 
-## 8. Testing
+## 8. Text Chunking
+
+After a PDF is validated and its text extracted, each page is split
+independently into overlapping, citation-ready chunks. This runs
+synchronously as part of the upload request; chunks are not yet persisted
+or embedded (that begins in Phase 4).
+
+**Why per-page, not per-document:** chunking each page's text in isolation
+means a chunk never spans a page boundary, so every chunk's `page_number`
+is always an exact, unambiguous citation back to the source PDF page.
+
+**Algorithm** (no LangChain or other chunking library — plain, dependency-free
+string slicing so behavior is fully deterministic):
+
+1. **Normalize whitespace.** Runs of spaces, tabs, and newlines collapse to
+   a single space; leading/trailing whitespace is trimmed. Only whitespace
+   is touched — digits, currency symbols, decimal points, and percentages
+   are never altered, so a figure like `$1,000.00` or `12.5%` is preserved
+   exactly.
+2. **Slide a window** of `CHUNK_SIZE` characters across the normalized page
+   text, advancing by `CHUNK_SIZE - CHUNK_OVERLAP` characters each step, so
+   consecutive chunks share `CHUNK_OVERLAP` characters of context.
+3. **Snap each cut to the nearest preceding space** so chunks avoid
+   splitting a word, falling back to a hard cut only when a single token
+   (e.g. a long account number) exceeds `CHUNK_SIZE` with no space to
+   break on.
+4. **Merge a too-small trailing remainder** (shorter than
+   `MIN_CHUNK_LENGTH`) into the previous chunk instead of emitting a tiny,
+   low-context final chunk.
+5. **Skip empty/whitespace-only pages** entirely — they contribute zero
+   chunks and never crash the pipeline.
+
+The same page text and settings always produce byte-identical chunks and
+chunk IDs — there is no randomness or wall-clock dependency anywhere in
+the pipeline.
+
+**Configuration** (`Settings` / `.env`):
+
+| Variable            | Default | Meaning                                              |
+|----------------------|---------|-------------------------------------------------------|
+| `CHUNK_SIZE`         | `1000`  | Maximum characters per chunk.                         |
+| `CHUNK_OVERLAP`      | `150`   | Shared characters between consecutive chunks. Must be smaller than `CHUNK_SIZE`. |
+| `MIN_CHUNK_LENGTH`   | `50`    | Trailing remainders shorter than this are merged into the previous chunk. |
+
+An inconsistent configuration (e.g. `CHUNK_OVERLAP >= CHUNK_SIZE`, a
+negative value, or `MIN_CHUNK_LENGTH > CHUNK_SIZE`) raises a typed
+`InvalidChunkConfigurationError`, surfaced as an HTTP `500` — this reflects
+bad server configuration, not a bad upload.
+
+**Each chunk carries:**
+
+| Field             | Description                                                        |
+|--------------------|---------------------------------------------------------------------|
+| `chunk_id`         | SHA-256 of `document_id:page_number:chunk_index:text` — deterministic and unique per document/position/content. |
+| `document_id`      | The parent document's content hash.                                |
+| `chunk_index`      | 0-based position across the whole document, in page order.         |
+| `page_number`      | The 1-based source PDF page — the citation anchor.                 |
+| `source_filename`  | The sanitized filename the chunk came from.                        |
+| `text`             | The normalized chunk text.                                         |
+| `character_count`  | `len(text)`.                                                        |
+| `start_character` / `end_character` | Character offsets into the page's normalized text.  |
+| `content_hash`     | SHA-256 of `text` alone — independent of `document_id`, so identical content hashes identically even across different documents. |
+
+Chunk objects exist only inside the service pipeline for this phase — they
+are never persisted, embedded, logged, or returned over the API. The
+public upload response only ever exposes the summary counts `chunk_count`
+and `pages_with_text`.
+
+## 9. Testing
 
 The backend test suite uses `pytest` and FastAPI's `TestClient`. All test
 PDFs (including a password-protected one) are generated in memory with
@@ -291,7 +369,15 @@ rejection of non-PDF files, wrong content type, invalid PDF signature,
 empty files, corrupted PDFs, oversized files, encrypted/password-protected
 PDFs, filename sanitization, and document-ID/page-metadata stability.
 
-## 9. Ethical & Privacy Considerations
+Phase 3 adds: single-chunk short text, multi-chunk overlapping long text,
+deterministic chunk IDs, document/page/source metadata correctness, empty
+and whitespace-only pages, whitespace normalization, word-boundary
+behavior, invalid size/overlap/minimum-length configuration, minimum
+chunk length merging, multi-page PDF chunking, and API-level checks that
+`chunk_count`/`pages_with_text` are present while no chunk or page text
+ever appears in the response.
+
+## 10. Ethical & Privacy Considerations
 
 - **No real API keys or secrets are ever committed.** `.env` is
   git-ignored; only `.env.example` (placeholder variable names) is
@@ -313,6 +399,6 @@ PDFs, filename sanitization, and document-ID/page-metadata stability.
   technical/portfolio demonstration and is not intended to provide
   financial, legal, or compliance advice.
 
-## 10. License
+## 11. License
 
 See [LICENSE](./LICENSE).

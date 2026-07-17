@@ -42,3 +42,13 @@ class CorruptedPDFError(PolicyLensError):
 
 class EncryptedPDFError(PolicyLensError):
     status_code = 422
+
+
+class InvalidChunkConfigurationError(PolicyLensError):
+    """Raised when chunk_size/chunk_overlap/min_chunk_length are inconsistent.
+
+    This reflects bad server configuration (env vars), not a bad client
+    request, so it maps to 500 rather than a 4xx status.
+    """
+
+    status_code = 500

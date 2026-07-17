@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     max_upload_size_mb: int = 10
     allowed_file_types: str = ".pdf"
 
+    chunk_size: int = 1000
+    chunk_overlap: int = 150
+    min_chunk_length: int = 50
+
     enable_pii_masking: bool = True
     enable_cost_tracking: bool = True
     enable_latency_tracking: bool = True
