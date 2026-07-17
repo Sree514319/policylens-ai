@@ -19,6 +19,8 @@ class DocumentUploadResponse(BaseModel):
     character_count: int = Field(..., ge=0, description="Total extracted character count across all pages.")
     status: str = Field(..., description="Processing status, e.g. 'processed'.")
     preview: str = Field(..., description="Short, truncated preview of the extracted text (not the full document).")
+    chunk_count: int = Field(..., ge=0, description="Number of citation-ready text chunks produced.")
+    pages_with_text: int = Field(..., ge=0, description="Number of pages that contained extractable text.")
 
 
 class ErrorResponse(BaseModel):
