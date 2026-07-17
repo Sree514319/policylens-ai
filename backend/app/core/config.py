@@ -24,7 +24,7 @@ class Settings(BaseSettings):
 
     streamlit_server_port: int = 8501
 
-    chroma_db_path: str = "./data/vector_store"
+    chroma_persist_directory: str = "./data/vector_store"
     chroma_collection_name: str = "policylens_documents"
 
     max_upload_size_mb: int = 10
@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     chunk_size: int = 1000
     chunk_overlap: int = 150
     min_chunk_length: int = 50
+
+    embedding_model_name: str = "all-MiniLM-L6-v2"
+    retrieval_top_k: int = 5
+    min_relevance_score: float = 0.0
 
     enable_pii_masking: bool = True
     enable_cost_tracking: bool = True

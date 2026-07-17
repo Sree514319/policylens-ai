@@ -5,10 +5,39 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.services.retrieval.embeddings import FakeEmbeddingProvider
+from app.services.retrieval.vector_store import VectorStore, get_vector_store
 
 
 @pytest.fixture
-def client():
+def tmp_chroma_dir(tmp_path):
+    """A fresh, isolated directory for a test's own ChromaDB persistence.
+
+    Never the project's real `data/vector_store/` directory, and never
+    reused across tests -- pytest's `tmp_path` gives each test function
+    its own throwaway directory.
+    """
+
+    return str(tmp_path / "chroma")
+
+
+@pytest.fixture
+def vector_store(tmp_chroma_dir):
+    """A `VectorStore` backed by an isolated temp directory and the
+    deterministic `FakeEmbeddingProvider` -- no model download, no
+    network access.
+    """
+
+    return VectorStore(
+        persist_directory=tmp_chroma_dir,
+        collection_name="test_collection",
+        embedding_provider=FakeEmbeddingProvider(),
+    )
+
+
+@pytest.fixture
+def client(vector_store):
+    app.dependency_overrides[get_vector_store] = lambda: vector_store
     return TestClient(app)
 
 
