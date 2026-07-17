@@ -6,8 +6,9 @@ fact-checked answers — generated and cross-validated by both **Anthropic
 Claude** and **OpenAI GPT** models — alongside transparent accuracy,
 latency, and cost metrics.
 
-> **Status:** 🚧 Project foundation stage. Architecture and folder
-> structure are in place; core functionality is not yet implemented.
+> **Status:** 🚧 Active development. Project foundation and the secure PDF
+> ingestion endpoint are implemented; retrieval, LLM integration, and the
+> frontend are not yet built.
 
 ---
 
@@ -122,18 +123,25 @@ wrapper.
 policylens-ai/
 ├── backend/
 │   ├── app/
-│   │   ├── api/v1/         # FastAPI routers (versioned)
-│   │   ├── core/           # Settings, config, shared infrastructure
-│   │   ├── models/         # Internal data models
-│   │   ├── schemas/        # Pydantic request/response schemas
+│   │   ├── main.py            # FastAPI entry point (GET /health, routers)
+│   │   ├── api/v1/
+│   │   │   └── documents.py   # POST /api/v1/documents/upload
+│   │   ├── core/
+│   │   │   ├── config.py      # pydantic-settings configuration
+│   │   │   └── exceptions.py  # Typed application exceptions
+│   │   ├── models/            # Internal data models
+│   │   ├── schemas/
+│   │   │   └── document.py    # Upload request/response schemas
 │   │   ├── services/
-│   │   │   ├── llm/          # Claude / OpenAI client wrappers, comparison logic
-│   │   │   ├── ingestion/    # PDF parsing & chunking
-│   │   │   ├── retrieval/    # ChromaDB indexing & semantic search, citations
-│   │   │   ├── privacy/      # PII/sensitive-data detection & masking
-│   │   │   └── evaluation/   # Unsupported-claim detection, accuracy, latency, cost
-│   │   └── utils/           # Shared helpers
-│   └── tests/               # Backend unit/integration tests
+│   │   │   ├── llm/            # Claude / OpenAI client wrappers, comparison logic
+│   │   │   ├── ingestion/
+│   │   │   │   └── pdf_processor.py  # PDF validation & text extraction (PyMuPDF)
+│   │   │   ├── retrieval/      # ChromaDB indexing & semantic search, citations
+│   │   │   ├── privacy/        # PII/sensitive-data detection & masking
+│   │   │   └── evaluation/     # Unsupported-claim detection, accuracy, latency, cost
+│   │   └── utils/
+│   │       └── uploads.py     # Size-bounded UploadFile streaming helper
+│   └── tests/                 # Backend unit/integration tests (pytest)
 ├── frontend/
 │   └── streamlit_app/
 │       ├── pages/            # Multi-page Streamlit views
@@ -145,6 +153,7 @@ policylens-ai/
 ├── docs/                     # Design docs, diagrams, ADRs
 ├── scripts/                  # Dev/ops utility scripts
 ├── .env.example              # Environment variable template (no real secrets)
+├── pytest.ini                 # Pytest configuration (adds backend/ to path)
 ├── requirements.txt           # Python dependencies
 └── README.md
 ```
@@ -154,11 +163,12 @@ policylens-ai/
 This repository is being built incrementally. Planned phases:
 
 - [x] **Phase 0 — Project foundation**: repository scaffolding, folder
-      structure, README, dependency baseline (this step).
-- [ ] **Phase 1 — Core configuration**: environment/config management,
-      settings validation, logging setup.
-- [ ] **Phase 2 — Document ingestion**: PDF upload endpoint, PyMuPDF
-      parsing, chunking strategy.
+      structure, README, dependency baseline.
+- [x] **Phase 1 — Core configuration**: environment/config management via
+      `pydantic-settings`, typed exceptions, logging setup.
+- [x] **Phase 2 — Secure PDF ingestion**: `POST /api/v1/documents/upload`,
+      PyMuPDF-based validation and text extraction, in-memory processing
+      only (see [API Reference](#7-api-reference) below).
 - [ ] **Phase 3 — Vector store & retrieval**: ChromaDB integration,
       embedding pipeline, semantic search with citation metadata.
 - [ ] **Phase 4 — LLM integration**: Claude and OpenAI client wrappers,
@@ -174,7 +184,7 @@ This repository is being built incrementally. Planned phases:
 - [ ] **Phase 9 — Containerization & deployment**: Dockerfiles, compose
       setup, deployment documentation.
 
-### Local setup (once implementation begins)
+### Local setup
 
 ```bash
 # 1. Clone and enter the repository
@@ -182,9 +192,9 @@ git clone <repo-url>
 cd policylens-ai
 
 # 2. Create and activate a virtual environment
-python -m venv venv
-venv\Scripts\activate        # Windows
-# source venv/bin/activate   # macOS/Linux
+python -m venv .venv
+.venv\Scripts\activate        # Windows
+# source .venv/bin/activate   # macOS/Linux
 
 # 3. Install dependencies
 pip install -r requirements.txt
@@ -192,14 +202,96 @@ pip install -r requirements.txt
 # 4. Configure environment variables
 copy .env.example .env       # Windows
 # cp .env.example .env       # macOS/Linux
-# then fill in real API keys and settings in .env
+# then fill in real API keys and settings in .env (never commit .env)
 
-# 5. Run the backend and frontend (once implemented)
-# uvicorn backend.app.main:app --reload
+# 5. Run the backend
+cd backend
+uvicorn app.main:app --reload
+# API docs available at http://127.0.0.1:8000/docs
+
+# 6. Run the frontend (once implemented)
 # streamlit run frontend/streamlit_app/app.py
 ```
 
-## 7. Ethical & Privacy Considerations
+## 7. API Reference
+
+### `GET /health`
+
+Liveness check. Returns `200 OK`:
+
+```json
+{ "status": "ok" }
+```
+
+### `POST /api/v1/documents/upload`
+
+Accepts a single PDF policy document as `multipart/form-data` (field name
+`file`), validates it, extracts its text **in memory only**, and returns
+metadata — never the full document text.
+
+**Validation performed, in order:**
+
+1. File is not empty.
+2. Filename has a `.pdf` extension.
+3. Request content type is exactly `application/pdf`.
+4. File begins with the `%PDF-` signature.
+5. Upload size does not exceed `MAX_UPLOAD_SIZE_MB` (checked while
+   streaming, before the whole file is buffered).
+6. File parses as a well-formed PDF (PyMuPDF).
+7. File is not encrypted or password-protected.
+8. File contains at least one page.
+
+**Success response — `201 Created`:**
+
+```json
+{
+  "document_id": "3f1a9c...e2 (sha256 hex digest, 64 chars)",
+  "filename": "bank_policy.pdf",
+  "page_count": 12,
+  "character_count": 24831,
+  "status": "processed",
+  "preview": "First ~200 characters of the extracted text..."
+}
+```
+
+- `document_id` is a SHA-256 hash of the file's raw bytes, so re-uploading
+  identical content (even under a different filename) always yields the
+  same ID.
+- `filename` is sanitized (directory components and unsafe characters
+  stripped) before being echoed back.
+- `preview` is capped at ~200 characters — the full extracted text is
+  never returned in the response and never written to logs.
+
+**Error responses:**
+
+| Status | Meaning                                              |
+|--------|-------------------------------------------------------|
+| `400`  | Wrong extension, wrong content type, invalid PDF signature, or empty file |
+| `413`  | File exceeds the configured maximum upload size        |
+| `422`  | File is corrupted, unparsable, or encrypted/password-protected |
+| `500`  | Unexpected internal error (generic message only — no stack traces or file paths are ever exposed) |
+
+Uploaded PDFs are processed entirely in memory for this phase; nothing is
+written to disk.
+
+## 8. Testing
+
+The backend test suite uses `pytest` and FastAPI's `TestClient`. All test
+PDFs (including a password-protected one) are generated in memory with
+PyMuPDF — no binary fixture files are committed to the repository.
+
+```bash
+# From the repository root, with the virtual environment activated:
+pip install -r requirements.txt
+pytest
+```
+
+Coverage includes: the health endpoint, a valid multi-page upload,
+rejection of non-PDF files, wrong content type, invalid PDF signature,
+empty files, corrupted PDFs, oversized files, encrypted/password-protected
+PDFs, filename sanitization, and document-ID/page-metadata stability.
+
+## 9. Ethical & Privacy Considerations
 
 - **No real API keys or secrets are ever committed.** `.env` is
   git-ignored; only `.env.example` (placeholder variable names) is
@@ -221,6 +313,6 @@ copy .env.example .env       # Windows
   technical/portfolio demonstration and is not intended to provide
   financial, legal, or compliance advice.
 
-## 8. License
+## 10. License
 
 See [LICENSE](./LICENSE).
