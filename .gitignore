@@ -216,3 +216,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# PolicyLens AI - local data
+data/vector_store/*
+!data/vector_store/.gitkeep
+data/sample_docs/*
+!data/sample_docs/.gitkeep
