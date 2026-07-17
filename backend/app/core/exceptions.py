@@ -52,3 +52,35 @@ class InvalidChunkConfigurationError(PolicyLensError):
     """
 
     status_code = 500
+
+
+class VectorStoreError(PolicyLensError):
+    """Raised when the ChromaDB-backed vector store is unavailable or
+    returns a corrupted/unexpected result. Maps to 503 (Service
+    Unavailable) since this reflects a dependency-availability problem,
+    not a malformed client request.
+    """
+
+    status_code = 503
+
+
+class DocumentNotFoundError(PolicyLensError):
+    """Raised when a search request scopes to a document_id that has no
+    indexed chunks in the vector store.
+    """
+
+    status_code = 404
+
+
+class EmbeddingConfigurationMismatchError(PolicyLensError):
+    """Raised when the active embedding provider does not match the
+    provider/dimension recorded in an existing collection (e.g.
+    EMBEDDING_MODEL_NAME was changed, or the collection's distance space
+    is not cosine as expected). This is a server misconfiguration -- not
+    a bad request -- so it maps to 500, matching
+    `InvalidChunkConfigurationError`. Silently continuing would mix
+    incompatible embeddings in the same collection and produce meaningless
+    similarity scores.
+    """
+
+    status_code = 500

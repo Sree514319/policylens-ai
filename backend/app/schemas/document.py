@@ -21,6 +21,9 @@ class DocumentUploadResponse(BaseModel):
     preview: str = Field(..., description="Short, truncated preview of the extracted text (not the full document).")
     chunk_count: int = Field(..., ge=0, description="Number of citation-ready text chunks produced.")
     pages_with_text: int = Field(..., ge=0, description="Number of pages that contained extractable text.")
+    indexed_chunk_count: int = Field(
+        ..., ge=0, description="Number of chunks successfully upserted into the vector store."
+    )
 
 
 class ErrorResponse(BaseModel):

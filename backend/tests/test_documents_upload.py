@@ -32,6 +32,9 @@ def test_valid_pdf_upload_returns_metadata(client, valid_pdf_bytes):
     assert body["chunk_count"] == 2  # one short chunk per page at default chunk_size
     assert body["pages_with_text"] == 2
 
+    # Phase 4: the same chunks were indexed into the vector store.
+    assert body["indexed_chunk_count"] == body["chunk_count"]
+
     # ...but no field anywhere carries full chunk/page text.
     assert set(body.keys()) == {
         "document_id",
@@ -42,9 +45,30 @@ def test_valid_pdf_upload_returns_metadata(client, valid_pdf_bytes):
         "preview",
         "chunk_count",
         "pages_with_text",
+        "indexed_chunk_count",
     }
     assert "chunks" not in body
     assert "page two" not in str(body)
+
+
+def test_reuploading_identical_pdf_does_not_duplicate_indexed_chunks(client, vector_store, valid_pdf_bytes):
+    first = client.post(
+        UPLOAD_URL,
+        files={"file": ("policy.pdf", valid_pdf_bytes, "application/pdf")},
+    )
+    second = client.post(
+        UPLOAD_URL,
+        files={"file": ("policy-again.pdf", valid_pdf_bytes, "application/pdf")},
+    )
+
+    assert first.status_code == second.status_code == 201
+    document_id = first.json()["document_id"]
+    assert document_id == second.json()["document_id"]
+
+    results = vector_store.search(query="Hello World page one", top_k=10, document_id=document_id)
+    # Two chunks were produced by the PDF (one per page); re-uploading the
+    # identical content must upsert in place, not double the count.
+    assert len(results) == first.json()["chunk_count"]
 
 
 def test_non_pdf_extension_rejected(client):

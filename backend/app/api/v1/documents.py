@@ -8,6 +8,7 @@ from app.core.config import Settings, get_settings
 from app.schemas.document import DocumentUploadResponse
 from app.services.ingestion.pdf_processor import process_pdf
 from app.services.ingestion.text_chunker import chunk_document
+from app.services.retrieval.vector_store import VectorStore, get_vector_store
 from app.utils.uploads import read_upload_within_limit
 
 logger = logging.getLogger(__name__)
@@ -24,6 +25,7 @@ router = APIRouter()
 async def upload_document(
     file: UploadFile = File(..., description="A single PDF file."),
     settings: Settings = Depends(get_settings),
+    vector_store: VectorStore = Depends(get_vector_store),
 ) -> DocumentUploadResponse:
     data = await read_upload_within_limit(file, settings.max_upload_size_bytes)
 
@@ -41,12 +43,18 @@ async def upload_document(
     )
     pages_with_text = sum(1 for page in result.pages if page.text.strip())
 
+    # Upsert is keyed by each chunk's deterministic chunk_id (content-derived),
+    # so re-uploading the same PDF re-indexes the same chunks in place instead
+    # of duplicating them.
+    indexed_chunk_count = vector_store.upsert_chunks(chunks)
+
     logger.info(
-        "Document ingested: pages=%d characters=%d chunks=%d pages_with_text=%d",
+        "Document ingested: pages=%d characters=%d chunks=%d pages_with_text=%d indexed_chunks=%d",
         result.page_count,
         result.character_count,
         len(chunks),
         pages_with_text,
+        indexed_chunk_count,
     )
 
     return DocumentUploadResponse(
@@ -58,4 +66,5 @@ async def upload_document(
         preview=result.preview,
         chunk_count=len(chunks),
         pages_with_text=pages_with_text,
+        indexed_chunk_count=indexed_chunk_count,
     )
