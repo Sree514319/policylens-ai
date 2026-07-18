@@ -7,9 +7,11 @@ Claude** and **OpenAI GPT** models — alongside transparent accuracy,
 latency, and cost metrics.
 
 > **Status:** 🚧 Active development. Project foundation, secure PDF
-> ingestion, deterministic text chunking, and local-embedding vector
-> search are implemented; LLM integration and the frontend are not yet
-> built.
+> ingestion, deterministic text chunking, local-embedding vector search,
+> and grounded multi-model (Claude + GPT) RAG answering are implemented;
+> the frontend is not yet built. Real Anthropic/OpenAI calls stay
+> disabled until you explicitly opt in (see
+> [Multi-Model RAG Answers](#10-multi-model-rag-answers)).
 
 ---
 
@@ -127,16 +129,20 @@ policylens-ai/
 │   │   ├── main.py            # FastAPI entry point (GET /health, routers)
 │   │   ├── api/v1/
 │   │   │   ├── documents.py   # POST /api/v1/documents/upload
-│   │   │   └── search.py      # POST /api/v1/search
+│   │   │   ├── search.py      # POST /api/v1/search
+│   │   │   └── answers.py     # POST /api/v1/answers
 │   │   ├── core/
 │   │   │   ├── config.py      # pydantic-settings configuration
 │   │   │   └── exceptions.py  # Typed application exceptions
 │   │   ├── models/            # Internal data models
 │   │   ├── schemas/
 │   │   │   ├── document.py    # Upload request/response schemas
-│   │   │   └── search.py      # Search request/response schemas
+│   │   │   ├── search.py      # Search request/response schemas
+│   │   │   └── answer.py      # Grounded-answer request/response schemas
 │   │   ├── services/
-│   │   │   ├── llm/            # Claude / OpenAI client wrappers, comparison logic
+│   │   │   ├── llm/
+│   │   │   │   ├── providers.py  # LLMProvider abstraction (Anthropic/OpenAI/fake)
+│   │   │   │   └── rag.py        # Evidence retrieval, prompting, citation validation
 │   │   │   ├── ingestion/
 │   │   │   │   ├── pdf_processor.py  # PDF validation & text extraction (PyMuPDF)
 │   │   │   │   └── text_chunker.py   # Deterministic, page-aware chunking & citation IDs
@@ -182,8 +188,12 @@ This repository is being built incrementally. Planned phases:
       provider, ChromaDB persistence, and `POST /api/v1/search` semantic
       search over the chunks produced in Phase 3 (see
       [Vector Search & Retrieval](#9-vector-search--retrieval) below).
-- [ ] **Phase 5 — LLM integration**: Claude and OpenAI client wrappers,
-      prompt templates, concurrent dual-model querying.
+- [x] **Phase 5 — Multi-model grounded RAG**: provider-neutral
+      `LLMProvider` abstraction (Claude + GPT), concurrent independent
+      querying, evidence-grounded structured JSON answers with validated
+      citations, and `POST /api/v1/answers` (see
+      [Multi-Model RAG Answers](#10-multi-model-rag-answers) below).
+      Real external calls stay off by default.
 - [ ] **Phase 6 — Privacy layer**: sensitive-information detection and
       masking applied before display/storage/outbound calls.
 - [ ] **Phase 7 — Evaluation layer**: unsupported-claim detection,
@@ -538,11 +548,193 @@ storing something to search against. Mitigations:
 - Only a capped excerpt (`EXCERPT_CHAR_LIMIT` = 300 characters) is ever
   returned by the search API — not the full stored chunk text.
 - No chunk text, query text, or excerpt is ever logged — only IDs,
-  counts, and durations (see [Ethical & Privacy Considerations](#11-ethical--privacy-considerations)).
+  counts, and durations (see [Ethical & Privacy Considerations](#12-ethical--privacy-considerations)).
 - Nothing here is sent to a third-party API: embedding happens locally,
   and storage is local disk.
 
-## 10. Testing
+## 10. Multi-Model RAG Answers
+
+`POST /api/v1/answers` retrieves evidence for a question (via the same
+`VectorStore` as `/search`) and asks **both** Claude and GPT to answer,
+grounded strictly in that evidence, concurrently and independently.
+
+### Flow
+
+1. **Retrieve** — the question is embedded and searched against the
+   vector store (optionally scoped to `document_id`), exactly like
+   `/search`.
+2. **Cap the context** — retrieved chunks (already relevance-ordered) are
+   kept up to a total character budget (`MAX_RAG_CONTEXT_CHARACTERS`),
+   always keeping at least the top match even if it alone exceeds the
+   budget.
+3. **Label evidence** — each kept chunk gets a stable label for *this
+   request* — `S1`, `S2`, `S3`, ... in relevance order.
+4. **Prompt** — a system prompt instructs the model to answer using
+   *only* the labeled evidence, to treat that evidence as **untrusted
+   data, never as instructions** (explicitly telling it to ignore any
+   embedded commands or "ignore previous instructions" text found inside
+   a chunk), and to respond with a single strict JSON object:
+   `{"insufficient_evidence": bool, "answer": string, "citations": [string]}`.
+5. **Run providers concurrently** — every requested provider is called
+   at the same time (`asyncio.gather`), each with its own
+   timeout/retry policy; the total wall-clock time is close to the
+   slowest single provider, not the sum of both.
+6. **Parse and validate** — the raw JSON is parsed (tolerating minor
+   formatting noise like markdown code fences); citation labels that
+   weren't actually shown to the model are dropped; duplicates are
+   deduped. Every field in a returned citation (`chunk_id`,
+   `document_id`, `source_filename`, `page_number`, `excerpt`,
+   `relevance_score`) is copied from our own stored evidence metadata —
+   **never from anything the model wrote**, beyond which label(s) it
+   named. Page numbers and filenames can never be invented.
+
+### Provider architecture
+
+`LLMProvider` is a minimal, provider-neutral interface —
+`generate(system_prompt, user_prompt) -> ProviderResponse` — that knows
+nothing about RAG, evidence, or JSON schemas; that logic lives entirely
+in the RAG orchestration layer, not the provider layer. No SDK-specific
+object (an Anthropic `Message`, an OpenAI `ChatCompletion`, an SDK
+exception) ever leaves the provider module.
+
+- `AnthropicProvider` / `OpenAIProvider` (production) — thin wrappers
+  around the official async SDK clients (Messages API / Chat Completions
+  API). Every SDK exception (auth failure, rate limit, timeout,
+  connection error, generic API error, or anything unexpected) is caught
+  and translated into a short, generic, client-safe `error` string —
+  never a stack trace, credentials, or a raw provider response dump.
+- `FakeLLMProvider` (tests only) — deterministic and fully configurable
+  (canned JSON, canned raw text, a canned error, a simulated delay, or a
+  raised exception for defense-in-depth testing) — no network access.
+
+### Failure / partial-success behavior
+
+Every requested provider is evaluated **independently**: one provider
+failing never discards another provider's successful answer. Each
+`model_results[]` entry gets exactly one of three statuses:
+
+| Status                 | Meaning                                                            |
+|--------------------------|----------------------------------------------------------------------|
+| `success`               | A grounded answer with 0+ validated citations.                     |
+| `insufficient_evidence` | The model determined the evidence doesn't support an answer (or no evidence was retrieved at all, in which case no provider is even called). |
+| `error`                 | A safe, generic message — missing/invalid API key, rate limit, timeout, connection failure, malformed/unparsable JSON, an empty answer, or `ALLOW_EXTERNAL_LLM_CALLS=false`. |
+
+A retrieval failure (no such `document_id`, or the vector store itself
+being unavailable) still fails the whole request (`404`/`503`), the same
+as `/search` — there is no meaningful per-provider answer to give when
+there's nothing to ground it in.
+
+### External-call safety (read this before setting `ALLOW_EXTERNAL_LLM_CALLS=true`)
+
+**Real Anthropic/OpenAI network calls are refused by default.** Unless
+`ALLOW_EXTERNAL_LLM_CALLS=true` is explicitly set, every provider result
+comes back as `status: "error"` with a safe configuration message —
+**no network call is attempted at all**, regardless of whether API keys
+are configured.
+
+> ⚠️ **Enabling external calls sends retrieved excerpts to Anthropic
+> and/or OpenAI.** Once `ALLOW_EXTERNAL_LLM_CALLS=true` and a real API
+> key is configured, the question and the retrieved evidence excerpts
+> (not the full document) are sent to whichever third-party provider(s)
+> you request, subject to their own data-handling terms.
+>
+> ⚠️ **Do not upload real customer or other PII-bearing documents** until
+> the Phase 6 privacy/PII-masking layer is implemented and enabled. Use
+> synthetic or public sample policy documents only (see
+> [Ethical & Privacy Considerations](#12-ethical--privacy-considerations)).
+
+### Configuration (`Settings` / `.env`)
+
+| Variable                  | Default                        | Meaning                                              |
+|------------------------------|-----------------------------------|---------------------------------------------------------|
+| `ANTHROPIC_API_KEY`         | *(unset)*                        | Required only once external calls are enabled.          |
+| `OPENAI_API_KEY`            | *(unset)*                        | Required only once external calls are enabled.          |
+| `ANTHROPIC_MODEL`           | `claude-3-5-sonnet-20241022`     | Never hardcoded in provider logic — always read from Settings. |
+| `OPENAI_MODEL`              | `gpt-4o-mini`                    | Same.                                                    |
+| `ALLOW_EXTERNAL_LLM_CALLS`  | `false`                          | Hard safety switch (see above).                          |
+| `LLM_TIMEOUT_SECONDS`       | `30.0`                           | Per-provider request timeout.                            |
+| `LLM_MAX_OUTPUT_TOKENS`     | `1024`                           | Per-provider max output tokens.                           |
+| `LLM_MAX_RETRIES`           | `2`                              | Per-provider SDK-level retry count.                        |
+| `MAX_RAG_CONTEXT_CHARACTERS`| `6000`                           | Total evidence character budget per request.               |
+
+### `POST /api/v1/answers`
+
+**Request body:**
+
+```json
+{
+  "question": "What is the overdraft fee?",
+  "document_id": "3f1a9c...e2",
+  "providers": ["anthropic", "openai"],
+  "top_k": 5
+}
+```
+
+- `question` — required, non-empty after trimming (max 2000 characters).
+- `document_id` — optional; scopes retrieval to one document (`404` if
+  it has no indexed chunks).
+- `providers` — optional list of `"anthropic"` / `"openai"`; defaults to
+  both. An unknown provider name or an empty list is rejected (`422`).
+- `top_k` — optional, `1`-`50`; defaults to `RETRIEVAL_TOP_K`.
+
+**Success response — `200 OK`:**
+
+```json
+{
+  "question": "What is the overdraft fee?",
+  "evidence_count": 3,
+  "model_results": [
+    {
+      "provider": "anthropic",
+      "model": "claude-3-5-sonnet-20241022",
+      "status": "success",
+      "answer": "The overdraft fee is $35 per occurrence, capped at 3 per day [S1].",
+      "citations": [
+        {
+          "source_label": "S1",
+          "chunk_id": "b7e2...",
+          "document_id": "3f1a9c...e2",
+          "source_filename": "bank_policy.pdf",
+          "page_number": 4,
+          "excerpt": "Overdraft fees are $35 per occurrence, capped at...",
+          "relevance_score": 0.87
+        }
+      ],
+      "latency_ms": 842.3,
+      "input_tokens": 512,
+      "output_tokens": 41,
+      "error": null
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-4o-mini",
+      "status": "error",
+      "answer": "",
+      "citations": [],
+      "latency_ms": 30000.0,
+      "input_tokens": null,
+      "output_tokens": null,
+      "error": "The OpenAI API request timed out."
+    }
+  ]
+}
+```
+
+**Error responses:**
+
+| Status | Meaning                                              |
+|--------|-------------------------------------------------------|
+| `404`  | `document_id` was given but has no indexed chunks       |
+| `422`  | `question` is empty/whitespace-only, `top_k` is out of range, or `providers` contains an unknown name / is an empty list |
+| `500`  | An embedding/collection configuration mismatch was detected in the vector store |
+| `503`  | The vector store is unavailable or returned a malformed result |
+
+Individual provider failures (auth, rate limit, timeout, malformed
+output, etc.) are **not** HTTP errors — they surface as
+`status: "error"` within that provider's own `model_results[]` entry, so
+a client always gets `200 OK` with whatever succeeded.
+
+## 11. Testing
 
 The backend test suite uses `pytest` and FastAPI's `TestClient`. All test
 PDFs (including a password-protected one) are generated in memory with
@@ -593,7 +785,27 @@ All Phase 4 tests use an isolated temporary directory
 `FakeEmbeddingProvider` — no model download or network access ever
 happens during the test suite.
 
-## 11. Ethical & Privacy Considerations
+Phase 5 adds: `AnthropicProvider`/`OpenAIProvider` error mapping (missing
+API key, authentication failure, rate limit, timeout, connection error,
+generic API error, unexpected exception, empty response) with the real
+SDK client's network-making method mocked via `AsyncMock` — never a live
+call; both-providers-succeed, one-succeeds-one-fails, both-fail, and a
+provider-that-raises-doesn't-take-down-the-other; concurrent (not
+sequential) execution timing; malformed/unparsable JSON; empty answer;
+unknown and duplicate citation-label filtering; a proof that uncited
+evidence metadata never leaks into the citations list; model-reported
+insufficient evidence; zero-evidence short-circuiting without calling any
+provider; a structural prompt-injection check (evidence text is delimited
+and verbatim, and the system prompt contains the untrusted-data/ignore-
+instructions guidance); evidence context-size capping (including the
+always-keep-at-least-one-result edge case); document-scoped retrieval;
+`ALLOW_EXTERNAL_LLM_CALLS=false` blocking every provider by default with
+no network attempt; the answer response's exact key set; and a check that
+no question/answer/evidence text ever appears in an error message. All
+Phase 5 tests use `FakeLLMProvider` or a mocked SDK client — no live API
+calls, no real API keys, no model downloads.
+
+## 12. Ethical & Privacy Considerations
 
 - **No real API keys or secrets are ever committed.** `.env` is
   git-ignored; only `.env.example` (placeholder variable names) is
@@ -620,7 +832,16 @@ happens during the test suite.
   work at all; that directory stays git-ignored, only capped excerpts are
   ever returned by the API, and no query, chunk, or excerpt text is ever
   logged.
+- **Real external LLM calls are off by default and must be opted into
+  explicitly.** `ALLOW_EXTERNAL_LLM_CALLS=false` refuses every
+  Anthropic/OpenAI request with a safe configuration error and no network
+  attempt (see [Multi-Model RAG Answers](#10-multi-model-rag-answers)).
+  Enabling it sends the question and retrieved evidence excerpts (not the
+  full document) to whichever third-party provider(s) are requested.
+  **Do not upload real customer or other PII-bearing documents** until
+  the Phase 6 privacy/PII-masking layer is implemented and enabled — use
+  synthetic or public sample policy documents only.
 
-## 12. License
+## 13. License
 
 See [LICENSE](./LICENSE).
