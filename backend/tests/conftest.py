@@ -5,6 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.services.llm.providers import FakeLLMProvider, get_llm_provider_registry
 from app.services.retrieval.embeddings import FakeEmbeddingProvider
 from app.services.retrieval.vector_store import VectorStore, get_vector_store
 
@@ -36,8 +37,33 @@ def vector_store(tmp_chroma_dir):
 
 
 @pytest.fixture
-def client(vector_store):
+def llm_providers():
+    """Default fake LLM providers (deterministic, no network) for the `client`
+    fixture. Individual tests override `get_llm_provider_registry` directly
+    for success/error/timeout/etc. scenarios.
+    """
+
+    # citations: ["S1"] -- a "success" status requires at least one valid
+    # citation when evidence was supplied; an empty list here would make
+    # this an (incorrect) apparently-grounded-but-uncited default.
+    return {
+        "anthropic": FakeLLMProvider(
+            name="anthropic",
+            model="fake-anthropic-model",
+            response_json={"insufficient_evidence": False, "answer": "Default fake answer.", "citations": ["S1"]},
+        ),
+        "openai": FakeLLMProvider(
+            name="openai",
+            model="fake-openai-model",
+            response_json={"insufficient_evidence": False, "answer": "Default fake answer.", "citations": ["S1"]},
+        ),
+    }
+
+
+@pytest.fixture
+def client(vector_store, llm_providers):
     app.dependency_overrides[get_vector_store] = lambda: vector_store
+    app.dependency_overrides[get_llm_provider_registry] = lambda: llm_providers
     return TestClient(app)
 
 

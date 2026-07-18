@@ -3,18 +3,34 @@
 from functools import lru_cache
 from typing import Optional
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    # LLM provider credentials (not used until later phases; never given real
-    # defaults here so a missing .env never accidentally enables live calls).
+    # LLM provider credentials -- never given real defaults here so a
+    # missing .env never accidentally enables live calls. The real safety
+    # gate is allow_external_llm_calls below, but a missing key is also
+    # independently checked before any request is attempted.
     anthropic_api_key: Optional[str] = None
     openai_api_key: Optional[str] = None
-    anthropic_model: Optional[str] = None
-    openai_model: Optional[str] = None
+    anthropic_model: str = "claude-3-5-sonnet-20241022"
+    openai_model: str = "gpt-4o-mini"
+
+    # Hard safety switch: real Anthropic/OpenAI network calls are refused
+    # (with a safe configuration error, no network attempt) unless this is
+    # explicitly set to true. Off by default so cloning this repo and
+    # running it never silently sends data to a third party.
+    allow_external_llm_calls: bool = False
+    # Bounded so a misconfigured .env can't produce a degenerate value
+    # (a zero/negative timeout, an unbounded retry count, a context budget
+    # so small no evidence fits, or so large it defeats the point of a cap).
+    llm_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
+    llm_max_output_tokens: int = Field(default=1024, ge=1, le=8192)
+    llm_max_retries: int = Field(default=2, ge=0, le=10)
+    max_rag_context_characters: int = Field(default=6000, ge=100, le=100_000)
 
     app_env: str = "development"
     log_level: str = "INFO"
