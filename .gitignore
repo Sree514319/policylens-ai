@@ -222,3 +222,9 @@ data/vector_store/*
 !data/vector_store/.gitkeep
 data/sample_docs/*
 !data/sample_docs/.gitkeep
+
+# PolicyLens AI - offline benchmark outputs (may reflect a real .env's
+# configuration/local run; never committed -- data/evaluation/sample_questions.jsonl
+# itself, outside this results/ subdirectory, IS tracked)
+data/evaluation/results/*
+!data/evaluation/results/.gitkeep

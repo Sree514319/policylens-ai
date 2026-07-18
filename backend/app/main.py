@@ -5,7 +5,7 @@ import logging
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from app.api.v1 import answers, documents, search
+from app.api.v1 import answers, compare, documents, search
 from app.core.exceptions import PolicyLensError
 
 logging.basicConfig(level=logging.INFO)
@@ -39,3 +39,4 @@ async def health() -> dict:
 app.include_router(documents.router, prefix="/api/v1/documents", tags=["documents"])
 app.include_router(search.router, prefix="/api/v1", tags=["search"])
 app.include_router(answers.router, prefix="/api/v1", tags=["answers"])
+app.include_router(compare.router, prefix="/api/v1", tags=["compare"])

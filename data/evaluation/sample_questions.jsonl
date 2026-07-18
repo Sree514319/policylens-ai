@@ -1,0 +1,6 @@
+{"id": "q1", "question": "What is the overdraft fee for this account?", "document_id": "REPLACE_WITH_UPLOADED_DOCUMENT_ID", "expected_source_keywords": ["overdraft", "fee"], "expected_page": 1}
+{"id": "q2", "question": "What is the minimum balance required to avoid a monthly maintenance fee?", "document_id": "REPLACE_WITH_UPLOADED_DOCUMENT_ID", "expected_source_keywords": ["minimum balance", "maintenance fee"], "expected_page": 1}
+{"id": "q3", "question": "What is the interest rate on the savings account?", "document_id": "REPLACE_WITH_UPLOADED_DOCUMENT_ID", "expected_source_keywords": ["interest rate", "savings"], "expected_page": 2}
+{"id": "q4", "question": "How many days does the customer have to dispute an unauthorized transaction?", "document_id": "REPLACE_WITH_UPLOADED_DOCUMENT_ID", "expected_source_keywords": ["dispute", "unauthorized", "days"], "expected_page": 2}
+{"id": "q5", "question": "What is the fee for an outgoing domestic wire transfer?", "document_id": "REPLACE_WITH_UPLOADED_DOCUMENT_ID", "expected_source_keywords": ["wire transfer", "fee"], "expected_page": 3}
+{"id": "q6", "question": "What are the requirements to close this account without a penalty?", "document_id": "REPLACE_WITH_UPLOADED_DOCUMENT_ID", "expected_source_keywords": ["close account", "penalty"], "expected_page": 3}

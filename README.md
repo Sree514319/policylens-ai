@@ -1,19 +1,21 @@
 # PolicyLens AI
 
 A multi-model financial document intelligence assistant. Upload banking
-policy PDFs, ask questions in natural language, and receive cited,
-fact-checked answers — generated and cross-validated by both **Anthropic
-Claude** and **OpenAI GPT** models — alongside transparent accuracy,
-latency, and cost metrics.
+policy PDFs, ask questions in natural language, and receive cited
+answers — generated independently by both **Anthropic Claude** and
+**OpenAI GPT** models — alongside a transparent, metric-by-metric
+comparison of grounding, latency, and cost (never a single "accuracy" or
+"winner" score).
 
 > **Status:** 🚧 Active development. Project foundation, secure PDF
 > ingestion, deterministic text chunking, local-embedding vector search,
-> grounded multi-model (Claude + GPT) RAG answering, and local PII
-> detection/masking are implemented; the frontend is not yet built. Real
+> grounded multi-model (Claude + GPT) RAG answering, local PII
+> detection/masking, and transparent Claude-vs-OpenAI evaluation/
+> comparison are implemented; the frontend is not yet built. Real
 > Anthropic/OpenAI calls stay disabled until you explicitly opt in (see
 > [Multi-Model RAG Answers](#10-multi-model-rag-answers)). **This is a
 > portfolio project, not a compliance product** — read
-> [PII Detection & Masking](#11-pii-detection--masking) before using
+> [PII Detection & Masking](#12-pii-detection--masking) before using
 > anything but synthetic/public sample documents.
 
 ---
@@ -37,7 +39,9 @@ documents and ask natural-language questions against them. It then:
   not backed by the retrieved source text.
 - **Masks sensitive information** (e.g., account numbers, SSNs, emails)
   before it is displayed, logged, or sent to a third-party LLM.
-- Displays **accuracy, latency, and cost** metrics per model, per query.
+- Displays **grounding, latency, and cost** metrics per model, per query
+  (see [Model Evaluation & Comparison](#11-model-evaluation--comparison)
+  — deliberately no accuracy score).
 
 The goal is a portfolio-quality demonstration of responsible, production-
 style LLM application engineering: multi-model orchestration, grounded
@@ -55,8 +59,9 @@ wrapper.
   retrieved context.
 - 🛡️ **PII/sensitive-data masking** — redact account numbers, SSNs, emails,
   phone numbers, etc. before display or before leaving the system.
-- 📊 **Metrics dashboard** — accuracy proxy, latency, and per-query token
-  cost for each model.
+- 📊 **Metrics dashboard** — citation coverage/relevance, a lexical
+  grounded-term ratio, latency, and per-query token cost for each model
+  (no accuracy score).
 - 🐳 **Containerized deployment** — Docker-based local and cloud deployment.
 - ✅ **Automated tests** — unit and integration coverage via pytest.
 
@@ -133,7 +138,9 @@ policylens-ai/
 │   │   ├── api/v1/
 │   │   │   ├── documents.py   # POST /api/v1/documents/upload
 │   │   │   ├── search.py      # POST /api/v1/search
-│   │   │   └── answers.py     # POST /api/v1/answers
+│   │   │   ├── answers.py     # POST /api/v1/answers
+│   │   │   ├── compare.py     # POST /api/v1/compare
+│   │   │   └── _shared.py     # Small response-shape helpers shared by routes
 │   │   ├── core/
 │   │   │   ├── config.py      # pydantic-settings configuration
 │   │   │   └── exceptions.py  # Typed application exceptions
@@ -141,7 +148,8 @@ policylens-ai/
 │   │   ├── schemas/
 │   │   │   ├── document.py    # Upload request/response schemas
 │   │   │   ├── search.py      # Search request/response schemas
-│   │   │   └── answer.py      # Grounded-answer request/response schemas
+│   │   │   ├── answer.py      # Grounded-answer request/response schemas
+│   │   │   └── evaluation.py  # Compare request/response schemas
 │   │   ├── services/
 │   │   │   ├── llm/
 │   │   │   │   ├── providers.py  # LLMProvider abstraction (Anthropic/OpenAI/fake)
@@ -155,7 +163,8 @@ policylens-ai/
 │   │   │   ├── privacy/
 │   │   │   │   ├── detectors.py  # PIIDetector abstraction (local regex + fake)
 │   │   │   │   └── masking.py    # Masking orchestration, PIIMaskingSummary
-│   │   │   └── evaluation/     # Unsupported-claim detection, accuracy, latency, cost
+│   │   │   └── evaluation/
+│   │   │       └── metrics.py  # Per-provider metrics & Claude-vs-OpenAI comparison
 │   │   └── utils/
 │   │       └── uploads.py     # Size-bounded UploadFile streaming helper
 │   └── tests/                 # Backend unit/integration tests (pytest)
@@ -165,10 +174,14 @@ policylens-ai/
 │       └── components/       # Reusable UI components
 ├── data/
 │   ├── sample_docs/          # Example policy PDFs for local dev/testing
-│   └── vector_store/         # Local ChromaDB persistence (gitignored)
+│   ├── vector_store/         # Local ChromaDB persistence (gitignored)
+│   └── evaluation/
+│       ├── sample_questions.jsonl  # Synthetic benchmark questions (tracked)
+│       └── results/          # Offline benchmark run outputs (gitignored)
 ├── docker/                   # Dockerfiles / container configs
 ├── docs/                     # Design docs, diagrams, ADRs
-├── scripts/                  # Dev/ops utility scripts
+├── scripts/
+│   └── run_evaluation.py     # Offline benchmark runner (dry-run by default)
 ├── .env.example              # Environment variable template (no real secrets)
 ├── pytest.ini                 # Pytest configuration (adds backend/ to path)
 ├── requirements.txt           # Python dependencies
@@ -204,9 +217,15 @@ This repository is being built incrementally. Planned phases:
       phone, IPv4, DOB, bank account, routing number), applied before
       preview generation, chunking, indexing, search, and RAG prompts;
       a versioned vector-store privacy check (see
-      [PII Detection & Masking](#11-pii-detection--masking) below).
-- [ ] **Phase 7 — Evaluation layer**: unsupported-claim detection,
-      accuracy scoring, latency and cost tracking.
+      [PII Detection & Masking](#12-pii-detection--masking) below).
+- [x] **Phase 7 — Model evaluation & comparison**: per-provider metrics
+      (citation coverage, mean citation relevance, a lexical
+      grounded-term ratio, latency, estimated cost), a Claude-vs-OpenAI
+      `POST /api/v1/compare` that reuses a single RAG call and never
+      declares a "winner" or accuracy score, and an offline,
+      dry-run-by-default benchmark script (see
+      [Model Evaluation & Comparison](#11-model-evaluation--comparison)
+      below).
 - [ ] **Phase 8 — Frontend**: Streamlit upload flow, chat interface,
       model comparison view, metrics dashboard.
 - [ ] **Phase 9 — Testing**: consolidated pytest coverage review across
@@ -296,7 +315,7 @@ metadata — never the full document text.
 - `filename` is sanitized (directory components and unsafe characters
   stripped) before being echoed back.
 - `preview` is capped at ~200 characters, and is generated **after** PII
-  masking (see [PII Detection & Masking](#11-pii-detection--masking)
+  masking (see [PII Detection & Masking](#12-pii-detection--masking)
   below) — the full extracted text, masked or not, is never returned in
   the response and never written to logs.
 - `chunk_count` and `pages_with_text` summarize the Phase 3 chunking pass
@@ -311,7 +330,7 @@ metadata — never the full document text.
   them.
 - `pii_detected`/`pii_entity_count`/`pii_categories` summarize what was
   masked — category names and a count only, never the matched values or
-  their positions. See [PII Detection & Masking](#11-pii-detection--masking).
+  their positions. See [PII Detection & Masking](#12-pii-detection--masking).
 
 **Error responses:**
 
@@ -371,7 +390,7 @@ ranked, citation-ready results.
 }
 ```
 
-- `query` is masked (see [PII Detection & Masking](#11-pii-detection--masking))
+- `query` is masked (see [PII Detection & Masking](#12-pii-detection--masking))
   **before** it is embedded/searched — if PII was detected in the
   submitted query, `query` here is the masked version and
   `query_was_masked` is `true`. The original, unmasked query is never
@@ -572,7 +591,7 @@ storing something to search against. Mitigations:
 - Only a capped excerpt (`EXCERPT_CHAR_LIMIT` = 300 characters) is ever
   returned by the search API — not the full stored chunk text.
 - No chunk text, query text, or excerpt is ever logged — only IDs,
-  counts, and durations (see [Ethical & Privacy Considerations](#13-ethical--privacy-considerations)).
+  counts, and durations (see [Ethical & Privacy Considerations](#14-ethical--privacy-considerations)).
 - Nothing here is sent to a third-party API: embedding happens locally,
   and storage is local disk.
 
@@ -665,7 +684,7 @@ are configured.
 > ⚠️ **Do not upload real customer or other PII-bearing documents** until
 > the Phase 6 privacy/PII-masking layer is implemented and enabled. Use
 > synthetic or public sample policy documents only (see
-> [Ethical & Privacy Considerations](#13-ethical--privacy-considerations)).
+> [Ethical & Privacy Considerations](#14-ethical--privacy-considerations)).
 
 ### Configuration (`Settings` / `.env`)
 
@@ -746,7 +765,7 @@ are configured.
 ```
 
 - `question` is masked **before** retrieval and before it's placed in any
-  provider prompt (see [PII Detection & Masking](#11-pii-detection--masking)).
+  provider prompt (see [PII Detection & Masking](#12-pii-detection--masking)).
   If PII was detected, `question` here is the masked version and
   `query_was_masked` is `true` — the original, unmasked question is never
   returned, logged, embedded, or sent to Anthropic/OpenAI.
@@ -765,7 +784,255 @@ output, etc.) are **not** HTTP errors — they surface as
 `status: "error"` within that provider's own `model_results[]` entry, so
 a client always gets `200 OK` with whatever succeeded.
 
-## 11. PII Detection & Masking
+## 11. Model Evaluation & Comparison
+
+`POST /api/v1/compare` runs the **exact same** RAG orchestration as
+`POST /api/v1/answers` — one retrieval, one call each to Anthropic and
+OpenAI, no duplicate provider calls — then evaluates each answer with a
+fixed set of measurable metrics and reports a transparent, metric-by-
+metric comparison between the two.
+
+> ⚠️ **There is no "winner" field, no overall accuracy score, and no
+> "best model" verdict anywhere in this response.** Two of the metrics
+> below (`grounded_term_ratio`, `answer_agreement_score`) are explicitly
+> *heuristics* — lexical overlap and embedding similarity — not fact-
+> checking. See "Limitations" at the end of this section before treating
+> any of this as a correctness judgment.
+
+### `POST /api/v1/compare`
+
+**Request body** — identical shape to `/answers`, except `providers`
+(if given at all) must name exactly `anthropic` and `openai`, in either
+order:
+
+```json
+{
+  "question": "What is the overdraft fee?",
+  "document_id": "3f1a9c...e2",
+  "top_k": 5
+}
+```
+
+**Success response — `200 OK`:**
+
+```json
+{
+  "question": "What is the overdraft fee?",
+  "query_was_masked": false,
+  "evidence_count": 3,
+  "model_results": [ /* identical shape to /answers' model_results[] */ ],
+  "provider_metrics": [
+    {
+      "provider": "anthropic",
+      "model": "claude-3-5-sonnet-20241022",
+      "status": "success",
+      "latency_ms": 842.3,
+      "input_tokens": 512,
+      "output_tokens": 41,
+      "estimated_cost_usd": 0.002181,
+      "valid_citation_count": 1,
+      "citation_coverage": 0.33,
+      "mean_citation_relevance": 0.87,
+      "grounded_term_ratio": 0.80,
+      "answer_length": 12,
+      "evaluation_notes": [
+        "grounded_term_ratio is a lexical overlap heuristic (normalized answer terms found in cited excerpts) and does NOT verify factual correctness."
+      ]
+    },
+    { "provider": "openai", "...": "..." }
+  ],
+  "comparison": {
+    "answer_agreement_score": 0.94,
+    "latency_difference_ms": -120.5,
+    "estimated_cost_difference_usd": 0.000812,
+    "comparison_status": "both_successful",
+    "comparison_notes": [
+      "latency: anthropic had the lower value (anthropic=842.30 ms, openai=962.80 ms).",
+      "estimated cost: openai had the lower value (anthropic=0.002181 USD, openai=0.001369 USD).",
+      "citation coverage: tie within the configured 5% tolerance (anthropic=0.33, openai=0.33).",
+      "mean citation relevance: tie within the configured 5% tolerance (anthropic=0.87, openai=0.85).",
+      "grounded-term ratio: anthropic had the higher value (anthropic=0.80, openai=0.60).",
+      "grounded_term_ratio is a lexical overlap heuristic (normalized answer terms found in cited excerpts) and does NOT verify factual correctness.",
+      "citation count: anthropic cited 1 source(s); openai cited 1.",
+      "Citation counts are reported for transparency only, not as a quality signal -- a model can be fully grounded while citing fewer sources.",
+      "answer_agreement_score is embedding cosine similarity (semantic closeness) and does NOT prove either answer is factually correct."
+    ]
+  }
+}
+```
+
+**Error responses:** identical to `/answers` (see above), plus `422` if
+`providers` is given and is not exactly `["anthropic", "openai"]` (in
+either order — duplicates are tolerated and normalized).
+
+### Per-provider metrics (`provider_metrics[]`)
+
+Every value is derived only from that provider's own `model_results[]`
+entry (its citations, tokens, latency) plus `evidence_count` — nothing
+here re-queries a provider or re-runs retrieval.
+
+| Metric | Formula | Null when |
+|--------|---------|-----------|
+| `citation_coverage` | unique valid cited sources ÷ `evidence_count`, clamped to `[0, 1]` | Never (`0.0` when there was no evidence) |
+| `mean_citation_relevance` | arithmetic mean of `relevance_score` across the model's citations | No citations |
+| `grounded_term_ratio` | (see below) proportion of the answer's meaningful terms also found in its cited excerpts | Answer has no meaningful terms after normalization, or `status != "success"` |
+| `estimated_cost_usd` | `input_tokens/1,000,000 × <input price> + output_tokens/1,000,000 × <output price>`, rounded to 6 decimal places (micro-dollars) | Token usage or pricing unavailable, or `ENABLE_COST_TRACKING=false` |
+| `answer_length` | word count of the answer text (whitespace-split) | Never — context only, **never used to judge quality** |
+| `valid_citation_count` | count of the model's citations that referenced real, supplied evidence (not deduplicated) | Never |
+
+**`grounded_term_ratio` normalization** (deterministic, no ML/NLP
+dependency): lowercase the answer (diacritics stripped first, e.g. "café"
+→ "cafe" — a Latin-script-only, stdlib-`unicodedata` improvement; non-Latin
+scripts are still dropped by the ASCII-only pattern, a known, narrower
+limitation), extract tokens as either one whole number (`$`/`,` stripped,
+sign and `%` kept — so "$1,000.00" and "1000.00" normalize identically,
+"-2.5%" and "2.5%" stay distinct, and two *different* amounts like
+"$1,000" and "$5,000" never spuriously overlap on a shared digit
+fragment) or a run of letters, remove a small fixed English stop-word
+list, and drop tokens shorter than `GROUNDED_TERM_MIN_LENGTH`. The ratio
+is `|unique meaningful answer terms ∩ unique terms in cited excerpts| ÷
+|unique meaningful answer terms|`.
+
+> ⚠️ **This is lexical overlap, not fact-checking.** A model can quote
+> vocabulary from its citations while still misstating what they say, and
+> a correct paraphrase using different words will score lower. Never
+> treat this as an accuracy or hallucination-detection signal.
+
+### Cross-model comparison (`comparison`)
+
+| Field | Meaning |
+|-------|---------|
+| `comparison_status` | One of `both_successful`, `anthropic_succeeded_openai_did_not`, `openai_succeeded_anthropic_did_not`, `neither_succeeded` |
+| `answer_agreement_score` | Cosine similarity between the two answers' text embeddings (via the same `EmbeddingProvider` used for retrieval). Range `[-1, 1]`. **Null unless `comparison_status == "both_successful"`.** |
+| `latency_difference_ms` | `anthropic.latency_ms − openai.latency_ms` (positive = Anthropic was slower) |
+| `estimated_cost_difference_usd` | `anthropic.estimated_cost_usd − openai.estimated_cost_usd`. Null if either is null. |
+| `comparison_notes` | Factual, per-metric sentences — never a verdict |
+
+> ⚠️ **`answer_agreement_score` is semantic similarity, not a
+> correctness check.** Two answers can be semantically close while both
+> being wrong, or meaningfully different while both being right (e.g.
+> one cites an extra caveat). It measures whether the two models said
+> similar things, not whether either one said something true.
+
+**How ties are decided:** every compared numeric metric (latency, cost,
+citation coverage, mean citation relevance, grounded-term ratio) is
+reported as a **tie** — not an advantage for either provider — whenever
+`|anthropic_value − openai_value| ≤ MODEL_COMPARISON_TIE_THRESHOLD ×
+max(|anthropic_value|, |openai_value|)` (a relative tolerance, default
+5%). This includes the both-exactly-zero case. Outside that tolerance,
+the note names which provider had the higher/lower value — phrased as a
+factual measurement ("X had the lower latency"), never as "won."
+
+**What is deliberately never compared:** `answer_length`. A longer
+answer is not a better one, so word count is reported per-provider for
+context only and is never part of any comparison note. Citation *count*
+differences are reported (for transparency) with an explicit disclaimer
+that they are not a quality signal by themselves.
+
+**When one or both providers don't succeed:** `comparison_status`
+reflects it explicitly (`error` and `insufficient_evidence` both count
+as "did not succeed"), `answer_agreement_score` is `null`, and
+`comparison_notes` explains each non-succeeding provider's status/error
+instead of attempting a metric comparison that wouldn't be meaningful.
+
+### Configuration (`Settings` / `.env`)
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `ANTHROPIC_INPUT_COST_PER_MILLION` | *(unset)* | USD per 1M input tokens. Leave blank to keep `estimated_cost_usd` null. |
+| `ANTHROPIC_OUTPUT_COST_PER_MILLION` | *(unset)* | USD per 1M output tokens. |
+| `OPENAI_INPUT_COST_PER_MILLION` | *(unset)* | USD per 1M input tokens. |
+| `OPENAI_OUTPUT_COST_PER_MILLION` | *(unset)* | USD per 1M output tokens. |
+| `MODEL_COMPARISON_TIE_THRESHOLD` | `0.05` | Relative tie tolerance (fraction, `0`-`1`) — see above. |
+| `GROUNDED_TERM_MIN_LENGTH` | `3` | Minimum normalized term length counted as "meaningful" for `grounded_term_ratio`. |
+| `ENABLE_COST_TRACKING` | `true` | Master switch for `estimated_cost_usd`; `false` forces it `null` regardless of pricing. |
+
+**Pricing is never hardcoded.** No vendor's current per-token price list
+ships with this project — prices change over time, and baking one in
+would silently go stale. `estimated_cost_usd` and
+`estimated_cost_difference_usd` are `null` until you explicitly
+configure both the input and output price for a provider.
+
+### Offline benchmark foundation (`scripts/run_evaluation.py`)
+
+A benchmark **question set**, not a labeled, verified-correct-answer
+**accuracy** dataset. `data/evaluation/sample_questions.jsonl` ships a
+handful of synthetic, generic banking-policy questions (one JSON object
+per line: `id`, `question`, and optional `document_id`,
+`expected_source_keywords`, `expected_page`). Fill in a real
+`document_id` after uploading your own synthetic sample document —
+`expected_source_keywords`/`expected_page` are informational only, for a
+human reviewer to eyeball against the actual citations; **the script
+never computes or reports a pass/fail or accuracy score from them.**
+
+```bash
+# Dry run (default): validates the question file, makes NO network calls,
+# and does not construct a vector store, embedding provider, or LLM
+# provider. Writes a plan (question count/IDs) to data/evaluation/results/.
+python scripts/run_evaluation.py
+
+# Live run: actually queries Anthropic/OpenAI for every question and
+# writes per-question metrics (not raw answer text, by default) to
+# data/evaluation/results/. Requires BOTH of the following:
+#   1. ALLOW_EXTERNAL_LLM_CALLS=true in your .env
+#   2. The --i-understand-this-calls-external-apis flag below
+python scripts/run_evaluation.py --mode live \
+    --i-understand-this-calls-external-apis
+
+# Optional: also persist each (already-masked) generated answer text.
+python scripts/run_evaluation.py --mode live \
+    --i-understand-this-calls-external-apis --include-answer-text
+```
+
+- Every question is masked through the same local PII pipeline as the
+  API before retrieval/embedding/any provider call (see
+  [PII Detection & Masking](#12-pii-detection--masking)).
+- `data/evaluation/results/` is git-ignored (only `.gitkeep` is tracked)
+  — a benchmark run's output never gets committed by accident.
+- Live-mode results persist metrics only by default (status, latency,
+  tokens, estimated cost, citation coverage/relevance, grounded-term
+  ratio, comparison notes) — never the generated answer text or citation
+  excerpts, unless `--include-answer-text` is explicitly passed.
+- This is a **foundation**, not a scored benchmark suite: there is no
+  labeled ground truth here, so no accuracy/precision/recall number is
+  ever computed, claimed, or persisted by this script.
+- **Output writes are atomic.** Each run writes to a temp file in
+  `data/evaluation/results/` and only then atomically renames it into
+  place — if the process is interrupted mid-write, the final filename
+  either doesn't exist yet or still holds its previous contents, never a
+  truncated/corrupt file that could be mistaken for a completed report.
+- **Exit codes:** `0` success, `1` the benchmark file is missing or
+  fails validation (malformed JSON, missing field, duplicate id), `2`
+  live mode was refused by a safety gate.
+
+### Limitations
+
+- **`grounded_term_ratio` is a lexical heuristic, not fact-checking.** It
+  measures vocabulary overlap between the answer and its cited excerpts,
+  not whether the answer's claims are actually supported or true.
+- **`answer_agreement_score` is semantic similarity, not correctness.**
+  Two similar-sounding answers can both be wrong; two differently-worded
+  answers can both be right.
+- **No accuracy, precision, recall, or "% correct" number is computed
+  anywhere in this phase.** There is no labeled, human-verified answer
+  dataset in this project — `expected_source_keywords`/`expected_page`
+  in the benchmark file are informational only.
+- **`estimated_cost_usd` depends entirely on the pricing you configure.**
+  This project ships with no default per-token prices; if you configure
+  them, remember vendor pricing changes over time and a stale value here
+  will silently misrepresent real cost.
+- **`grounded_term_ratio`'s tokenizer only understands Latin script and
+  Arabic numerals.** Diacritics are normalized away (e.g. "café" matches
+  "cafe"), but non-Latin scripts (Chinese, Arabic, Cyrillic, etc.) are
+  still dropped entirely by the underlying ASCII-only pattern, which can
+  under-count term overlap for non-English answer text — a known,
+  narrowed (not eliminated) limitation, not a crash.
+- **The offline benchmark script's "live" mode still triggers the same
+  local embedding-model download and real Anthropic/OpenAI calls the API
+  itself makes** — its two opt-in gates prevent *accidental* use, not the
+  underlying cost/network behavior once you've deliberately enabled it.
+
+## 12. PII Detection & Masking
 
 Before any extracted text is previewed, chunked, embedded, indexed,
 searched, or sent to an external LLM provider, it passes through a
@@ -917,7 +1184,7 @@ is the deliberately safe, documented path.
   documents with this project — never real customer data — until (if
   ever) a more rigorous PII/DLP solution is integrated.
 
-## 12. Testing
+## 13. Testing
 
 The backend test suite uses `pytest` and FastAPI's `TestClient`. All test
 PDFs (including a password-protected one) are generated in memory with
@@ -1016,7 +1283,37 @@ key sets including the new `pii_detected`/`pii_entity_count`/
 real `LocalRegexPIIDetector` (pure regex, no network/model dependency)
 or `FakePIIDetector` — no cloud PII service is ever called.
 
-## 13. Ethical & Privacy Considerations
+Phase 7 adds: every per-provider metric formula (citation coverage
+including deduplication and clamping, mean citation relevance including
+clamping, the grounded-term ratio's stop-word/punctuation/unicode
+normalization and minimum-length filtering, the cost formula with token
+usage absent/partial, pricing absent/configured, and cost tracking
+disabled); `evaluate_providers()`'s per-provider price resolution;
+`compare_providers()`'s comparison-status branching (both successful,
+each single-provider-only success, neither successful), tie-vs-advantage
+behavior at and outside the configured threshold, the latency/cost
+difference sign conventions, and answer-agreement scoring for identical
+vs. different answers (and its absence whenever either provider didn't
+succeed); explicit checks that no comparison note ever mentions "won,"
+"winner," or "accuracy," and that answer length is never part of a
+comparison; `POST /api/v1/compare`'s exactly-two-provider validation
+(rejecting a single provider or an unknown one, normalizing order and
+duplicates), a `_CountingProvider` proof that each provider is called
+exactly once per request, the exact response key set (including
+`provider_metrics[]` and `comparison`), and that PII in the question is
+masked before both retrieval and the provider prompt exactly as in
+`/answers`; and `scripts/run_evaluation.py`'s JSONL parsing/validation
+(missing fields, invalid JSON, duplicate IDs, comments/blank lines), a
+dry run that provably makes zero network calls (a blocked-`socket`
+monkeypatch, plus a real subprocess run), both live-mode safety gates
+refusing independently, and a repository-hygiene check that
+`data/evaluation/results/` stays git-ignored while
+`sample_questions.jsonl` itself is not. All Phase 7 tests use
+`FakeLLMProvider`/`FakeEmbeddingProvider` or directly-constructed
+`ModelAnswer`/`Citation` objects — no live API calls, no real API keys,
+no model downloads.
+
+## 14. Ethical & Privacy Considerations
 
 - **No real API keys or secrets are ever committed.** `.env` is
   git-ignored; only `.env.example` (placeholder variable names) is
@@ -1024,16 +1321,21 @@ or `FakePIIDetector` — no cloud PII service is ever called.
 - **Sensitive data masking is a first-class feature, not an add-on.**
   Account numbers, SSNs, emails, and similar identifiers are detected
   and redacted locally — see
-  [PII Detection & Masking](#11-pii-detection--masking) — before content
+  [PII Detection & Masking](#12-pii-detection--masking) — before content
   is chunked, indexed, displayed, logged, or sent to any third-party LLM
   provider. This is a best-effort regex layer, not a compliance
   guarantee (no HIPAA/PCI-DSS/GDPR/GLBA claim is made).
-- **Unsupported-claim detection** aims to reduce hallucination risk in a
-  financial context, where an incorrect or fabricated answer about a
-  policy term can have real consequences for a reader.
 - **Citations are mandatory, not optional**, so users can always verify
   an answer against the original source document rather than trusting
-  the model output blindly.
+  the model output blindly — this matters in a financial context, where
+  an incorrect or fabricated answer about a policy term can have real
+  consequences for a reader.
+- **Evaluation metrics are transparency tools, not correctness proofs.**
+  `grounded_term_ratio` (lexical overlap) and `answer_agreement_score`
+  (embedding similarity) — see
+  [Model Evaluation & Comparison](#11-model-evaluation--comparison) —
+  are explicitly labeled heuristics everywhere they appear, and
+  `/api/v1/compare` never produces a "winner" or accuracy verdict.
 - **Sample documents only.** This project is intended to be exercised
   against synthetic or publicly available sample banking policy
   documents — not real customer data.
@@ -1055,10 +1357,10 @@ or `FakePIIDetector` — no cloud PII service is ever called.
   are requested.
   **Do not upload real customer or other sensitive documents.** The
   local PII masking layer (see
-  [PII Detection & Masking](#11-pii-detection--masking)) is a best-effort
+  [PII Detection & Masking](#12-pii-detection--masking)) is a best-effort
   regex-based safeguard, not a regulatory-compliance guarantee — use
   synthetic or public sample policy documents only.
 
-## 14. License
+## 15. License
 
 See [LICENSE](./LICENSE).
