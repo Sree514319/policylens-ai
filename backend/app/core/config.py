@@ -76,6 +76,35 @@ class Settings(BaseSettings):
     enable_cost_tracking: bool = True
     enable_latency_tracking: bool = True
 
+    # --- Model evaluation / comparison (see app/services/evaluation) ------
+    # Optional, per-provider USD price per 1,000,000 tokens. Left unset by
+    # default so this project never bakes in a vendor's current price list
+    # (which changes over time and would silently go stale) -- an operator
+    # who wants `estimated_cost_usd` populated must configure these
+    # explicitly. `estimated_cost_usd` is null whenever the relevant price
+    # or token usage is unavailable, or `enable_cost_tracking` is false.
+    # `allow_inf_nan=False` explicitly rejects +inf/-inf/NaN -- `ge=0` alone
+    # rejects NaN too (all NaN comparisons are False, including `>= 0`) but
+    # NOT +inf, since `inf >= 0` is True. A price must be an ordinary finite
+    # number.
+    anthropic_input_cost_per_million: Optional[float] = Field(default=None, ge=0, allow_inf_nan=False)
+    anthropic_output_cost_per_million: Optional[float] = Field(default=None, ge=0, allow_inf_nan=False)
+    openai_input_cost_per_million: Optional[float] = Field(default=None, ge=0, allow_inf_nan=False)
+    openai_output_cost_per_million: Optional[float] = Field(default=None, ge=0, allow_inf_nan=False)
+    # Relative tolerance used to decide when two providers' compared metrics
+    # (latency, cost, citation coverage, mean citation relevance, grounded
+    # term ratio) are close enough to report as a tie rather than an
+    # advantage for either provider -- a fraction of the larger of the two
+    # compared values. See `evaluation/metrics.py::_describe_metric_diff`.
+    # `le=1` already excludes +inf; `allow_inf_nan=False` makes that
+    # explicit and additionally rejects -inf/NaN.
+    model_comparison_tie_threshold: float = Field(default=0.05, ge=0, le=1, allow_inf_nan=False)
+    # Minimum token length (after normalization/stop-word removal) for a
+    # word in a model's answer to count as a "meaningful term" for
+    # grounded_term_ratio -- filters short fragments (e.g. stray initials)
+    # without a second stop-word tier.
+    grounded_term_min_length: int = Field(default=3, ge=1)
+
     @property
     def max_upload_size_bytes(self) -> int:
         return self.max_upload_size_mb * 1024 * 1024

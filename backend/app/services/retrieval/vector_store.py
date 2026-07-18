@@ -164,6 +164,17 @@ class VectorStore:
 
         self._verify_collection_configuration()
 
+    @property
+    def embedding_provider(self) -> EmbeddingProvider:
+        """The `EmbeddingProvider` this store indexes/searches with.
+
+        Exposed so other services (e.g. model-comparison's answer-agreement
+        score) can embed arbitrary text with the exact same provider
+        instance already in use, instead of constructing a second one.
+        """
+
+        return self._embedding_provider
+
     def _verify_collection_configuration(self) -> None:
         """Reject silently mixing incompatible embeddings into one collection.
 
