@@ -84,3 +84,36 @@ class EmbeddingConfigurationMismatchError(PolicyLensError):
     """
 
     status_code = 500
+
+
+class PIIConfigurationError(PolicyLensError):
+    """Raised when PII protection settings are invalid or inconsistent.
+
+    Server misconfiguration, not a bad request -- maps to 500.
+    """
+
+    status_code = 500
+
+
+class PIIProcessingError(PolicyLensError):
+    """Raised when PII detection/masking itself fails unexpectedly.
+
+    The `detail` must never include the text being processed -- only a
+    generic description of the failure.
+    """
+
+    status_code = 500
+
+
+class PrivacyVersionMismatchError(PolicyLensError):
+    """Raised when PII protection is enabled but the vector store
+    collection was built under a different (or no) PII_REDACTION_VERSION.
+
+    Refusing to open the collection avoids silently mixing raw/differently
+    -masked chunks with chunks masked under the current rules. Maps to 500
+    (server/data misconfiguration) and its `detail` includes the safe,
+    documented migration step (delete the local, git-ignored vector-store
+    directory and re-upload) rather than any stored data.
+    """
+
+    status_code = 500

@@ -6,8 +6,11 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from app.services.llm.providers import FakeLLMProvider, get_llm_provider_registry
+from app.services.privacy.detectors import LocalRegexPIIDetector, get_pii_detector
 from app.services.retrieval.embeddings import FakeEmbeddingProvider
 from app.services.retrieval.vector_store import VectorStore, get_vector_store
+
+TEST_PII_REDACTION_VERSION = "v1"
 
 
 @pytest.fixture
@@ -26,14 +29,30 @@ def tmp_chroma_dir(tmp_path):
 def vector_store(tmp_chroma_dir):
     """A `VectorStore` backed by an isolated temp directory and the
     deterministic `FakeEmbeddingProvider` -- no model download, no
-    network access.
+    network access. Uses the same PII_REDACTION_VERSION as the default
+    Settings so it behaves like a normal, protection-enabled collection.
     """
 
     return VectorStore(
         persist_directory=tmp_chroma_dir,
         collection_name="test_collection",
         embedding_provider=FakeEmbeddingProvider(),
+        pii_protection_enabled=True,
+        pii_redaction_version=TEST_PII_REDACTION_VERSION,
     )
+
+
+@pytest.fixture
+def pii_detector():
+    """The real `LocalRegexPIIDetector` -- pure regex, no network/model
+    dependency, so it's safe to use directly (not faked) in the shared
+    `client` fixture. This lets ordinary upload/search/answer tests
+    exercise real masking behavior (and implicitly verify no
+    false-positives on their plain test content) without any test having
+    to think about PII at all unless it's specifically testing it.
+    """
+
+    return LocalRegexPIIDetector()
 
 
 @pytest.fixture
@@ -61,9 +80,10 @@ def llm_providers():
 
 
 @pytest.fixture
-def client(vector_store, llm_providers):
+def client(vector_store, llm_providers, pii_detector):
     app.dependency_overrides[get_vector_store] = lambda: vector_store
     app.dependency_overrides[get_llm_provider_registry] = lambda: llm_providers
+    app.dependency_overrides[get_pii_detector] = lambda: pii_detector
     return TestClient(app)
 
 

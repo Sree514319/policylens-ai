@@ -31,8 +31,14 @@ from typing import List, Optional
 import chromadb
 
 from app.core.config import get_settings
-from app.core.exceptions import DocumentNotFoundError, EmbeddingConfigurationMismatchError, VectorStoreError
+from app.core.exceptions import (
+    DocumentNotFoundError,
+    EmbeddingConfigurationMismatchError,
+    PrivacyVersionMismatchError,
+    VectorStoreError,
+)
 from app.services.ingestion.text_chunker import Chunk
+from app.services.privacy.masking import validate_pii_configuration
 from app.services.retrieval.embeddings import EmbeddingProvider, LocalEmbeddingProvider
 
 logger = logging.getLogger(__name__)
@@ -41,7 +47,15 @@ EXCERPT_CHAR_LIMIT = 300
 _HNSW_SPACE_KEY = "hnsw:space"
 _PROVIDER_NAME_KEY = "embedding_provider_name"
 _PROVIDER_DIMENSION_KEY = "embedding_dimension"
+_PII_REDACTION_VERSION_KEY = "pii_redaction_version"
 _EXPECTED_HNSW_SPACE = "cosine"
+
+_MIGRATION_INSTRUCTION = (
+    "Delete the local vector store directory (CHROMA_PERSIST_DIRECTORY, "
+    "'data/vector_store' by default -- it is git-ignored, so this only "
+    "affects your local index) and re-upload your documents so they are "
+    "indexed under the current PII_REDACTION_VERSION."
+)
 
 # Conservative fallback if the installed Chroma client ever lacks
 # get_max_batch_size() (older/alternate backends). The real, version-
@@ -110,18 +124,37 @@ def _validate_embedding_batch(vectors: object, expected_dimension: int) -> None:
 class VectorStore:
     """Wraps a single persistent Chroma collection for chunk storage and search."""
 
-    def __init__(self, persist_directory: str, collection_name: str, embedding_provider: EmbeddingProvider) -> None:
+    def __init__(
+        self,
+        persist_directory: str,
+        collection_name: str,
+        embedding_provider: EmbeddingProvider,
+        pii_protection_enabled: bool = True,
+        pii_redaction_version: Optional[str] = None,
+    ) -> None:
         self._embedding_provider = embedding_provider
+        self._pii_protection_enabled = pii_protection_enabled
+        self._pii_redaction_version = pii_redaction_version
+
+        # ChromaDB's metadata values must be str/int/float/bool -- None is
+        # rejected outright (a TypeError from the Rust bindings), so the
+        # key is only included when there's an actual version to record.
+        # A collection created with no version (PII protection disabled at
+        # the time) simply has no entry here, which `metadata.get(...)`
+        # in `_verify_collection_configuration` already treats as "missing".
+        creation_metadata = {
+            _HNSW_SPACE_KEY: _EXPECTED_HNSW_SPACE,
+            _PROVIDER_NAME_KEY: embedding_provider.name,
+            _PROVIDER_DIMENSION_KEY: embedding_provider.dimension,
+        }
+        if pii_redaction_version is not None:
+            creation_metadata[_PII_REDACTION_VERSION_KEY] = pii_redaction_version
 
         try:
             self._client = chromadb.PersistentClient(path=persist_directory)
             self._collection = self._client.get_or_create_collection(
                 name=collection_name,
-                metadata={
-                    _HNSW_SPACE_KEY: _EXPECTED_HNSW_SPACE,
-                    _PROVIDER_NAME_KEY: embedding_provider.name,
-                    _PROVIDER_DIMENSION_KEY: embedding_provider.dimension,
-                },
+                metadata=creation_metadata,
                 embedding_function=None,
             )
             self._max_batch_size = self._client.get_max_batch_size()
@@ -176,6 +209,22 @@ class VectorStore:
             raise EmbeddingConfigurationMismatchError(
                 "The configured embedding dimension does not match the one this collection was built with."
             )
+
+        # Stricter than the embedding-provider check above: a *missing*
+        # PII_REDACTION_VERSION is refused, not allowed through. Unlike
+        # embedding drift (where legacy data is merely unverifiable), a
+        # missing version here could mean this collection holds entirely
+        # unmasked chunks -- silently accepting it while PII protection is
+        # enabled would risk mixing raw and masked chunks in one
+        # collection with no way to tell them apart later.
+        if self._pii_protection_enabled:
+            stored_pii_version = metadata.get(_PII_REDACTION_VERSION_KEY)
+            if stored_pii_version != self._pii_redaction_version:
+                raise PrivacyVersionMismatchError(
+                    "This vector store collection was indexed under a different or missing "
+                    f"PII_REDACTION_VERSION (expected '{self._pii_redaction_version}'). "
+                    f"{_MIGRATION_INSTRUCTION}"
+                )
 
     def upsert_chunks(self, chunks: List[Chunk]) -> int:
         """Index (or re-index) chunks. Upserting identical chunk_ids is idempotent.
@@ -314,6 +363,7 @@ def get_vector_store() -> VectorStore:
     """
 
     settings = get_settings()
+    validate_pii_configuration(settings.pii_protection_enabled, settings.pii_redaction_version)
 
     try:
         embedding_provider = LocalEmbeddingProvider()
@@ -328,4 +378,6 @@ def get_vector_store() -> VectorStore:
         persist_directory=settings.chroma_persist_directory,
         collection_name=settings.chroma_collection_name,
         embedding_provider=embedding_provider,
+        pii_protection_enabled=settings.pii_protection_enabled,
+        pii_redaction_version=settings.pii_redaction_version,
     )

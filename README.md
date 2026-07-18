@@ -8,10 +8,13 @@ latency, and cost metrics.
 
 > **Status:** 🚧 Active development. Project foundation, secure PDF
 > ingestion, deterministic text chunking, local-embedding vector search,
-> and grounded multi-model (Claude + GPT) RAG answering are implemented;
-> the frontend is not yet built. Real Anthropic/OpenAI calls stay
-> disabled until you explicitly opt in (see
-> [Multi-Model RAG Answers](#10-multi-model-rag-answers)).
+> grounded multi-model (Claude + GPT) RAG answering, and local PII
+> detection/masking are implemented; the frontend is not yet built. Real
+> Anthropic/OpenAI calls stay disabled until you explicitly opt in (see
+> [Multi-Model RAG Answers](#10-multi-model-rag-answers)). **This is a
+> portfolio project, not a compliance product** — read
+> [PII Detection & Masking](#11-pii-detection--masking) before using
+> anything but synthetic/public sample documents.
 
 ---
 
@@ -149,7 +152,9 @@ policylens-ai/
 │   │   │   ├── retrieval/
 │   │   │   │   ├── embeddings.py     # EmbeddingProvider abstraction (local + fake)
 │   │   │   │   └── vector_store.py   # ChromaDB indexing & semantic search
-│   │   │   ├── privacy/        # PII/sensitive-data detection & masking
+│   │   │   ├── privacy/
+│   │   │   │   ├── detectors.py  # PIIDetector abstraction (local regex + fake)
+│   │   │   │   └── masking.py    # Masking orchestration, PIIMaskingSummary
 │   │   │   └── evaluation/     # Unsupported-claim detection, accuracy, latency, cost
 │   │   └── utils/
 │   │       └── uploads.py     # Size-bounded UploadFile streaming helper
@@ -194,8 +199,12 @@ This repository is being built incrementally. Planned phases:
       citations, and `POST /api/v1/answers` (see
       [Multi-Model RAG Answers](#10-multi-model-rag-answers) below).
       Real external calls stay off by default.
-- [ ] **Phase 6 — Privacy layer**: sensitive-information detection and
-      masking applied before display/storage/outbound calls.
+- [x] **Phase 6 — Local PII detection & masking**: regex + checksum-based
+      detection of common US financial identifiers (SSN, card, email,
+      phone, IPv4, DOB, bank account, routing number), applied before
+      preview generation, chunking, indexing, search, and RAG prompts;
+      a versioned vector-store privacy check (see
+      [PII Detection & Masking](#11-pii-detection--masking) below).
 - [ ] **Phase 7 — Evaluation layer**: unsupported-claim detection,
       accuracy scoring, latency and cost tracking.
 - [ ] **Phase 8 — Frontend**: Streamlit upload flow, chat interface,
@@ -274,7 +283,10 @@ metadata — never the full document text.
   "preview": "First ~200 characters of the extracted text...",
   "chunk_count": 34,
   "pages_with_text": 12,
-  "indexed_chunk_count": 34
+  "indexed_chunk_count": 34,
+  "pii_detected": true,
+  "pii_entity_count": 2,
+  "pii_categories": ["EMAIL", "SSN"]
 }
 ```
 
@@ -283,17 +295,23 @@ metadata — never the full document text.
   same ID.
 - `filename` is sanitized (directory components and unsafe characters
   stripped) before being echoed back.
-- `preview` is capped at ~200 characters — the full extracted text is
-  never returned in the response and never written to logs.
+- `preview` is capped at ~200 characters, and is generated **after** PII
+  masking (see [PII Detection & Masking](#11-pii-detection--masking)
+  below) — the full extracted text, masked or not, is never returned in
+  the response and never written to logs.
 - `chunk_count` and `pages_with_text` summarize the Phase 3 chunking pass
   (see [Text Chunking](#8-text-chunking) below) — the chunks themselves,
-  and their text, are never included in the response.
-- `indexed_chunk_count` is the number of those chunks embedded and
-  upserted into the vector store (see
+  and their text, are never included in the response. Chunking runs on
+  already-masked page text.
+- `indexed_chunk_count` is the number of those (masked) chunks embedded
+  and upserted into the vector store (see
   [Vector Search & Retrieval](#9-vector-search--retrieval) below). Because
   upserting is keyed by each chunk's deterministic `chunk_id`, re-uploading
   the same PDF re-indexes the same chunks in place instead of duplicating
   them.
+- `pii_detected`/`pii_entity_count`/`pii_categories` summarize what was
+  masked — category names and a count only, never the matched values or
+  their positions. See [PII Detection & Masking](#11-pii-detection--masking).
 
 **Error responses:**
 
@@ -338,6 +356,7 @@ ranked, citation-ready results.
 ```json
 {
   "query": "What is the overdraft fee?",
+  "query_was_masked": false,
   "result_count": 2,
   "results": [
     {
@@ -352,6 +371,11 @@ ranked, citation-ready results.
 }
 ```
 
+- `query` is masked (see [PII Detection & Masking](#11-pii-detection--masking))
+  **before** it is embedded/searched — if PII was detected in the
+  submitted query, `query` here is the masked version and
+  `query_was_masked` is `true`. The original, unmasked query is never
+  returned or logged.
 - `results` is ordered best-match first.
 - `excerpt` is capped (see `EXCERPT_CHAR_LIMIT` in
   [Vector Search & Retrieval](#9-vector-search--retrieval)) — never the
@@ -548,7 +572,7 @@ storing something to search against. Mitigations:
 - Only a capped excerpt (`EXCERPT_CHAR_LIMIT` = 300 characters) is ever
   returned by the search API — not the full stored chunk text.
 - No chunk text, query text, or excerpt is ever logged — only IDs,
-  counts, and durations (see [Ethical & Privacy Considerations](#12-ethical--privacy-considerations)).
+  counts, and durations (see [Ethical & Privacy Considerations](#13-ethical--privacy-considerations)).
 - Nothing here is sent to a third-party API: embedding happens locally,
   and storage is local disk.
 
@@ -641,7 +665,7 @@ are configured.
 > ⚠️ **Do not upload real customer or other PII-bearing documents** until
 > the Phase 6 privacy/PII-masking layer is implemented and enabled. Use
 > synthetic or public sample policy documents only (see
-> [Ethical & Privacy Considerations](#12-ethical--privacy-considerations)).
+> [Ethical & Privacy Considerations](#13-ethical--privacy-considerations)).
 
 ### Configuration (`Settings` / `.env`)
 
@@ -682,6 +706,7 @@ are configured.
 ```json
 {
   "question": "What is the overdraft fee?",
+  "query_was_masked": false,
   "evidence_count": 3,
   "model_results": [
     {
@@ -720,13 +745,19 @@ are configured.
 }
 ```
 
+- `question` is masked **before** retrieval and before it's placed in any
+  provider prompt (see [PII Detection & Masking](#11-pii-detection--masking)).
+  If PII was detected, `question` here is the masked version and
+  `query_was_masked` is `true` — the original, unmasked question is never
+  returned, logged, embedded, or sent to Anthropic/OpenAI.
+
 **Error responses:**
 
 | Status | Meaning                                              |
 |--------|-------------------------------------------------------|
 | `404`  | `document_id` was given but has no indexed chunks       |
 | `422`  | `question` is empty/whitespace-only, `top_k` is out of range, or `providers` contains an unknown name / is an empty list |
-| `500`  | An embedding/collection configuration mismatch was detected in the vector store |
+| `500`  | An embedding/collection configuration mismatch, PII configuration error, or vector-store privacy-version mismatch was detected |
 | `503`  | The vector store is unavailable or returned a malformed result |
 
 Individual provider failures (auth, rate limit, timeout, malformed
@@ -734,7 +765,159 @@ output, etc.) are **not** HTTP errors — they surface as
 `status: "error"` within that provider's own `model_results[]` entry, so
 a client always gets `200 OK` with whatever succeeded.
 
-## 11. Testing
+## 11. PII Detection & Masking
+
+Before any extracted text is previewed, chunked, embedded, indexed,
+searched, or sent to an external LLM provider, it passes through a
+**local, regex-based** PII detection and masking layer. Nothing here
+calls a cloud PII/DLP service or any external API.
+
+> ⚠️ **This is a portfolio-quality, best-effort layer — not a compliance
+> product.** It does not detect personal names, free-form postal
+> addresses, or most non-US identifiers, and it makes no HIPAA, PCI-DSS,
+> GDPR, GLBA, or other regulatory compliance claim. **Only upload
+> synthetic or public sample documents to this project** — never real
+> customer or other sensitive data. See "Limitations" below.
+
+### Masking order (where raw text can exist, and for how long)
+
+1. **Extraction** — `pdf_processor.process_pdf` extracts raw text from
+   the PDF, in memory only. The original PDF bytes are never written to
+   disk (unchanged since Phase 2).
+2. **Masking** — immediately after extraction, `mask_extracted_document`
+   detects and masks PII **page by page**, replacing `ExtractedDocument`'s
+   pages, `character_count`, and `preview` in place. This happens
+   *before* anything else touches the extracted text.
+3. **Chunking, embedding, indexing** — `text_chunker` and `VectorStore`
+   only ever see the already-masked pages; chunk text, embeddings, and
+   what's persisted to Chroma are all derived from masked text.
+4. **Search / RAG queries** — a submitted `query`/`question` is masked
+   *before* it is embedded or used for retrieval, and before it is placed
+   in any RAG prompt — so external providers receive only the masked
+   question and already-masked retrieved evidence.
+5. **Responses** — upload previews, search results, and RAG answers only
+   ever contain masked text. Nothing downstream of step 2 (for documents)
+   or the query-masking step (for search/RAG) ever has access to the
+   original unmasked value again.
+
+### Supported categories
+
+| Category | Placeholder | Detection rule |
+|----------|-------------|-----------------|
+| US SSN | `[SSN_REDACTED]` | Formatted `XXX-XX-XXXX` always; unformatted 9 digits only near "SSN"/"social security" context. Rejects area `000`/`666`/`900-999`, group `00`, and serial `0000` as structurally invalid. |
+| Credit/debit card | `[CARD_REDACTED]` | 13-19 digit candidate (formatted in 4-4-4-(1-7) groups, or unformatted) **and** Luhn-valid. |
+| Email address | `[EMAIL_REDACTED]` | Standard email pattern. Togglable via `PII_MASK_EMAILS`. |
+| US phone number | `[PHONE_REDACTED]` | Common formatted patterns, or an unformatted 10-digit NANP-shaped number. Togglable via `PII_MASK_PHONES`. |
+| IPv4 address | `[IP_REDACTED]` | Octet-bounded (0-255) dotted-quad pattern. |
+| Date of birth | `[DOB_REDACTED]` | A date pattern found near "Date of Birth"/"DOB"/"Born" context **only** — an unlabeled date is never treated as a DOB — **and** the date must be calendar-valid (e.g. "02/30/2020" is rejected). |
+| Bank account number | `[ACCOUNT_REDACTED]` | 6-17 digits near "Account Number"/"Acct No"/"A/C" context only. Part of `PII_MASK_FINANCIAL_IDENTIFIERS`. |
+| US routing number | `[ROUTING_REDACTED]` | 9 digits near "Routing Number"/"ABA"/"RTN" context **and** ABA checksum-valid. Part of `PII_MASK_FINANCIAL_IDENTIFIERS`. |
+
+SSN and DOB mask whenever `PII_PROTECTION_ENABLED=true`, regardless of
+the three category toggles above (which only gate email/phone/financial
+identifiers).
+
+**Filenames are masked too.** The sanitized filename is run through the
+same detector and masking as page text (e.g. `Customer 555-123-4567
+statement.pdf` becomes `Customer [PHONE_REDACTED] statement.pdf`) before
+it is used anywhere — the `filename`/`source_filename` fields returned by
+every endpoint, stored in Chroma metadata, and included in RAG citation
+headers sent to external providers all carry the masked filename, never
+the original. Note that email syntax (`@`) cannot itself survive
+filename sanitization (see the allow-list in `sanitize_filename`), so
+filename-based PII in practice is limited to digit/dash-shaped
+identifiers (SSN, phone, card, account, routing numbers).
+
+### Deliberately *not* masked (false-positive protection)
+
+Dollar amounts (`$1,000.00`), interest rates/percentages (`12.5%`),
+policy numbers without sensitive context, page numbers, ZIP/ZIP+4 codes,
+and general financial statistics never match any detector pattern —
+either because they don't fit a category's structural shape at all, or
+because a required context keyword (DOB, account, routing) is absent.
+Detection is deterministic and, when two candidate entities overlap
+(e.g. a phone-shaped run inside a longer digit sequence), resolved by a
+fixed category-priority order — the same input always masks the same way.
+
+### Configuration (`Settings` / `.env`)
+
+| Variable                          | Default | Meaning                                              |
+|--------------------------------------|---------|---------------------------------------------------------|
+| `PII_PROTECTION_ENABLED`            | `true`  | Master switch. When `false`, no detection/masking runs anywhere (text flows through as-is). |
+| `PII_MODE`                          | `mask`  | Only `mask` is implemented; any other value is a config error (`500`) at startup. |
+| `PII_REDACTION_VERSION`             | `v1`    | Bumped whenever detection/masking rules change materially — see the vector-store check below. |
+| `PII_MASK_EMAILS`                   | `true`  | Toggles the EMAIL category. |
+| `PII_MASK_PHONES`                   | `true`  | Toggles the PHONE category. |
+| `PII_MASK_FINANCIAL_IDENTIFIERS`    | `true`  | Toggles CARD/BANK_ACCOUNT/ROUTING_NUMBER. |
+
+Setting `PII_PROTECTION_ENABLED=false` does **not**, by itself, allow raw
+questions or evidence to reach Anthropic/OpenAI: external calls are
+independently gated by `ALLOW_EXTERNAL_LLM_CALLS` (default `false`, see
+[Multi-Model RAG Answers](#10-multi-model-rag-answers)). Both flags
+default to the safe state, so an operator must explicitly opt into
+*both* disabling PII masking *and* enabling external calls before any
+unmasked content can be sent to a third-party provider — this is a
+deliberate, documented combination, never a silent side effect of either
+flag alone.
+
+### Response privacy metadata
+
+Only category names and counts are ever returned — never matched values
+or their positions in the text:
+
+- Upload responses: `pii_detected` (bool), `pii_entity_count` (int),
+  `pii_categories` (sorted, deduped list of category names).
+- Search/answer responses: `query_was_masked` (bool) — the `query`/
+  `question` field itself is the masked text when this is `true`.
+
+### Vector-store privacy-version enforcement
+
+Every Chroma collection records the active `PII_REDACTION_VERSION` as
+metadata at first creation (alongside the existing embedding-provider
+tracking from [Vector Search & Retrieval](#9-vector-search--retrieval)).
+On every `VectorStore` startup, **whenever `PII_PROTECTION_ENABLED=true`**,
+the stored version is compared against the current one:
+
+- **Match** → proceeds normally.
+- **Mismatch, or no version recorded at all** → refused with a typed
+  `PrivacyVersionMismatchError` (`500`). A *missing* version is refused
+  here — unlike the more lenient embedding-provider check — because it
+  could mean the collection holds entirely unmasked chunks; silently
+  accepting it would risk mixing raw and masked chunks with no way to
+  tell them apart later.
+
+This check is skipped entirely when `PII_PROTECTION_ENABLED=false` (the
+operator has explicitly accepted the risk).
+
+**Migration:** if you change `PII_REDACTION_VERSION`, change the masking
+rules, or need to move from an unprotected to a protected collection,
+delete the local vector-store directory (`CHROMA_PERSIST_DIRECTORY`,
+`data/vector_store/` by default — it is git-ignored, so this only
+affects your local index) and re-upload your documents so they're
+indexed under the current version. There is no in-place migration; that
+is the deliberately safe, documented path.
+
+### Limitations
+
+- **Regex-only.** This does not use a machine-learning NER model. It
+  will not reliably catch personal names, free-form postal addresses, or
+  most identifiers outside the specific US-centric patterns listed above.
+- **Not exhaustive for international formats.** Non-US SSN-equivalents,
+  IBANs, non-US phone numbers, and non-US card/account conventions are
+  out of scope for this phase.
+- **Detection does not cross page boundaries.** Each page's text (and the
+  filename) is masked independently. A sensitive value split across two
+  pages — e.g. an SSN with its first digits at the very end of one page
+  and the rest at the start of the next — will not be detected as a
+  single entity.
+- **No compliance claim.** This layer does not make this project HIPAA,
+  PCI-DSS, GDPR, GLBA, or otherwise regulatorily compliant, and must not
+  be relied upon as a sole safeguard for real sensitive data.
+- **Synthetic/public data only.** Use sample or synthetic banking policy
+  documents with this project — never real customer data — until (if
+  ever) a more rigorous PII/DLP solution is integrated.
+
+## 12. Testing
 
 The backend test suite uses `pytest` and FastAPI's `TestClient`. All test
 PDFs (including a password-protected one) are generated in memory with
@@ -805,15 +988,46 @@ no question/answer/evidence text ever appears in an error message. All
 Phase 5 tests use `FakeLLMProvider` or a mocked SDK client — no live API
 calls, no real API keys, no model downloads.
 
-## 12. Ethical & Privacy Considerations
+Phase 6 adds: every supported PII category (formatted and unformatted
+SSNs/cards/phones, valid and invalid Luhn cards, valid and invalid ABA
+routing checksums, context-dependent DOB/account/routing detection,
+rejection of structurally-invalid SSNs and calendar-impossible DOB
+dates); false-positive avoidance for dollar amounts, interest rates,
+policy numbers, page numbers, ZIP codes, and general financial
+statistics; deterministic overlap resolution across every category pair
+that can collide on the same span, duplicate values, adjacent
+no-separator values, and unicode/multiline surrounding text; that an
+already-masked placeholder is never re-detected and re-masking is a
+no-op; masking of PII in the uploaded filename (propagated to every
+chunk's `source_filename`, Chroma metadata, search results, and RAG
+citations); masking before preview generation, chunking, indexing, and
+persistence; masked search queries and RAG questions, including a
+`_CapturingProvider` proof that external providers receive only the
+masked question/evidence/filename; that no original PII value ever
+appears in an API response, a Chroma-stored document, a provider prompt,
+a log line, or an exception message; `PII_PROTECTION_ENABLED=false`
+behavior (and the explicit two-flag interaction with
+`ALLOW_EXTERNAL_LLM_CALLS`); `PII_REDACTION_VERSION` mismatch/missing-
+version rejection in the vector store (including a check that a failed
+reopen attempt never reads or overwrites existing data) with its
+documented migration path; and the upload/search/answer responses' exact
+key sets including the new `pii_detected`/`pii_entity_count`/
+`pii_categories`/`query_was_masked` fields. All Phase 6 tests use the
+real `LocalRegexPIIDetector` (pure regex, no network/model dependency)
+or `FakePIIDetector` — no cloud PII service is ever called.
+
+## 13. Ethical & Privacy Considerations
 
 - **No real API keys or secrets are ever committed.** `.env` is
   git-ignored; only `.env.example` (placeholder variable names) is
   tracked.
 - **Sensitive data masking is a first-class feature, not an add-on.**
-  Account numbers, SSNs, emails, and similar identifiers are intended to
-  be detected and redacted before content is displayed, logged, or sent
-  to any third-party LLM provider.
+  Account numbers, SSNs, emails, and similar identifiers are detected
+  and redacted locally — see
+  [PII Detection & Masking](#11-pii-detection--masking) — before content
+  is chunked, indexed, displayed, logged, or sent to any third-party LLM
+  provider. This is a best-effort regex layer, not a compliance
+  guarantee (no HIPAA/PCI-DSS/GDPR/GLBA claim is made).
 - **Unsupported-claim detection** aims to reduce hallucination risk in a
   financial context, where an incorrect or fabricated answer about a
   policy term can have real consequences for a reader.
@@ -836,12 +1050,15 @@ calls, no real API keys, no model downloads.
   explicitly.** `ALLOW_EXTERNAL_LLM_CALLS=false` refuses every
   Anthropic/OpenAI request with a safe configuration error and no network
   attempt (see [Multi-Model RAG Answers](#10-multi-model-rag-answers)).
-  Enabling it sends the question and retrieved evidence excerpts (not the
-  full document) to whichever third-party provider(s) are requested.
-  **Do not upload real customer or other PII-bearing documents** until
-  the Phase 6 privacy/PII-masking layer is implemented and enabled — use
+  Enabling it sends the masked question and masked retrieved evidence
+  excerpts (not the full document) to whichever third-party provider(s)
+  are requested.
+  **Do not upload real customer or other sensitive documents.** The
+  local PII masking layer (see
+  [PII Detection & Masking](#11-pii-detection--masking)) is a best-effort
+  regex-based safeguard, not a regulatory-compliance guarantee — use
   synthetic or public sample policy documents only.
 
-## 13. License
+## 14. License
 
 See [LICENSE](./LICENSE).

@@ -80,7 +80,7 @@ def test_answer_response_exact_key_set(client, valid_pdf_bytes):
     response = client.post(ANSWERS_URL, json={"question": "What page is 'Hello World' on?"})
     body = response.json()
 
-    assert set(body.keys()) == {"question", "evidence_count", "model_results"}
+    assert set(body.keys()) == {"question", "query_was_masked", "evidence_count", "model_results"}
     for result in body["model_results"]:
         assert set(result.keys()) == {
             "provider",
@@ -299,3 +299,169 @@ def test_duplicate_requested_providers_are_deduplicated(client, valid_pdf_bytes)
     body = response.json()
     assert len(body["model_results"]) == 1
     assert body["model_results"][0]["provider"] == "anthropic"
+
+
+# --- PII masking in the question -----------------------------------------------------
+
+
+def test_question_containing_pii_is_masked_before_retrieval_and_response(client, valid_pdf_bytes):
+    _upload(client, valid_pdf_bytes)
+    _enable_external_calls()
+    app.dependency_overrides[get_llm_provider_registry] = _success_providers
+
+    response = client.post(
+        ANSWERS_URL, json={"question": "For SSN 123-45-6789, what page is 'Hello World' on?"}
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "123-45-6789" not in body["question"]
+    assert "[SSN_REDACTED]" in body["question"]
+    assert body["query_was_masked"] is True
+
+
+def test_masked_question_is_what_the_provider_actually_receives(client, valid_pdf_bytes):
+    _upload(client, valid_pdf_bytes)
+    _enable_external_calls()
+
+    captured = {}
+
+    class _CapturingProvider(FakeLLMProvider):
+        async def generate(self, system_prompt, user_prompt):
+            captured["user_prompt"] = user_prompt
+            return await super().generate(system_prompt, user_prompt)
+
+    app.dependency_overrides[get_llm_provider_registry] = lambda: {
+        "anthropic": _CapturingProvider(
+            name="anthropic",
+            response_json={"insufficient_evidence": False, "answer": "Answer [S1].", "citations": ["S1"]},
+        )
+    }
+
+    client.post(
+        ANSWERS_URL,
+        json={"question": "For SSN 123-45-6789, what page is 'Hello World' on?", "providers": ["anthropic"]},
+    )
+
+    assert "123-45-6789" not in captured["user_prompt"]
+    assert "[SSN_REDACTED]" in captured["user_prompt"]
+
+
+def test_original_question_pii_never_appears_anywhere_in_the_response(client, valid_pdf_bytes):
+    _upload(client, valid_pdf_bytes)
+    _enable_external_calls()
+    app.dependency_overrides[get_llm_provider_registry] = _success_providers
+
+    response = client.post(
+        ANSWERS_URL, json={"question": "Email jane.doe@example.com -- what page is 'Hello World' on?"}
+    )
+
+    assert "jane.doe@example.com" not in response.text
+    assert "[EMAIL_REDACTED]" in response.text
+
+
+def test_pii_protection_disabled_leaves_question_unmasked(client, valid_pdf_bytes):
+    _upload(client, valid_pdf_bytes)
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        allow_external_llm_calls=True, pii_protection_enabled=False
+    )
+    app.dependency_overrides[get_llm_provider_registry] = _success_providers
+
+    response = client.post(
+        ANSWERS_URL, json={"question": "For SSN 123-45-6789, what page is 'Hello World' on?"}
+    )
+
+    body = response.json()
+    assert "123-45-6789" in body["question"]
+    assert body["query_was_masked"] is False
+
+
+def test_pii_protection_disabled_also_sends_the_unmasked_question_to_the_provider(client, valid_pdf_bytes):
+    # Documents the two-flag interaction: PII_PROTECTION_ENABLED=false alone
+    # does not gate external calls (ALLOW_EXTERNAL_LLM_CALLS does that
+    # independently) -- but once an operator has explicitly opted into
+    # *both* disabling PII masking and enabling external calls, the raw
+    # (unmasked) question really is what reaches the provider prompt. This
+    # is the deliberate, documented behavior of that explicit combination,
+    # not a silent leak of either flag alone.
+    _upload(client, valid_pdf_bytes)
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        allow_external_llm_calls=True, pii_protection_enabled=False
+    )
+
+    captured = {}
+
+    class _CapturingProvider(FakeLLMProvider):
+        async def generate(self, system_prompt, user_prompt):
+            captured["user_prompt"] = user_prompt
+            return await super().generate(system_prompt, user_prompt)
+
+    app.dependency_overrides[get_llm_provider_registry] = lambda: {
+        "anthropic": _CapturingProvider(
+            name="anthropic",
+            response_json={"insufficient_evidence": False, "answer": "Answer [S1].", "citations": ["S1"]},
+        )
+    }
+
+    client.post(
+        ANSWERS_URL,
+        json={"question": "For SSN 123-45-6789, what page is 'Hello World' on?", "providers": ["anthropic"]},
+    )
+
+    assert "123-45-6789" in captured["user_prompt"]
+
+
+# --- PII masking in the uploaded filename (citations) ---------------------------------
+
+
+def test_pii_in_uploaded_filename_never_appears_in_answer_citations(client):
+    from tests.conftest import _build_pdf
+
+    pdf_bytes = _build_pdf(["Hello World, this is page one of the policy document."])
+    upload_response = client.post(
+        UPLOAD_URL, files={"file": ("Customer 555-123-4567 statement.pdf", pdf_bytes, "application/pdf")}
+    )
+    assert upload_response.status_code == 201
+
+    _enable_external_calls()
+    app.dependency_overrides[get_llm_provider_registry] = _success_providers
+
+    response = client.post(ANSWERS_URL, json={"question": "What page is 'Hello World' on?"})
+
+    assert response.status_code == 200
+    assert "555-123-4567" not in response.text
+    body = response.json()
+    citations = [c for r in body["model_results"] for c in r["citations"]]
+    assert citations
+    assert all("[PHONE_REDACTED]" in c["source_filename"] for c in citations)
+
+
+def test_pii_in_uploaded_filename_never_reaches_the_provider_prompt(client):
+    from tests.conftest import _build_pdf
+
+    pdf_bytes = _build_pdf(["Hello World, this is page one of the policy document."])
+    upload_response = client.post(
+        UPLOAD_URL, files={"file": ("Customer 555-123-4567 statement.pdf", pdf_bytes, "application/pdf")}
+    )
+    assert upload_response.status_code == 201
+
+    _enable_external_calls()
+
+    captured = {}
+
+    class _CapturingProvider(FakeLLMProvider):
+        async def generate(self, system_prompt, user_prompt):
+            captured["user_prompt"] = user_prompt
+            return await super().generate(system_prompt, user_prompt)
+
+    app.dependency_overrides[get_llm_provider_registry] = lambda: {
+        "anthropic": _CapturingProvider(
+            name="anthropic",
+            response_json={"insufficient_evidence": False, "answer": "Answer [S1].", "citations": ["S1"]},
+        )
+    }
+
+    client.post(ANSWERS_URL, json={"question": "What page is 'Hello World' on?", "providers": ["anthropic"]})
+
+    assert "555-123-4567" not in captured["user_prompt"]
+    assert "[PHONE_REDACTED]" in captured["user_prompt"]

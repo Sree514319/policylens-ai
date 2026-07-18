@@ -109,7 +109,7 @@ def _validate_signature(data: bytes) -> None:
         raise InvalidFileSignatureError("The file does not have a valid PDF signature.")
 
 
-def _build_preview(pages: List[PageContent]) -> str:
+def build_preview(pages: List[PageContent]) -> str:
     source = next((page.text for page in pages if page.text.strip()), "")
     stripped = source.strip()
     if len(stripped) <= PREVIEW_CHAR_LIMIT:
@@ -173,6 +173,6 @@ def process_pdf(data: bytes, original_filename: str, content_type: Optional[str]
         filename=sanitized_name,
         page_count=len(pages),
         character_count=total_characters,
-        preview=_build_preview(pages),
+        preview=build_preview(pages),
         pages=pages,
     )

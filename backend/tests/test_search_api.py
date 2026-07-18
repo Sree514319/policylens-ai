@@ -33,7 +33,7 @@ def test_search_response_exact_key_set(client, valid_pdf_bytes):
     response = client.post(SEARCH_URL, json={"query": "Hello World"})
     body = response.json()
 
-    assert set(body.keys()) == {"query", "result_count", "results"}
+    assert set(body.keys()) == {"query", "query_was_masked", "result_count", "results"}
     assert len(body["results"]) >= 1
     for result in body["results"]:
         assert set(result.keys()) == {
@@ -167,4 +167,53 @@ def test_search_query_is_trimmed_and_echoed(client, valid_pdf_bytes):
     response = client.post(SEARCH_URL, json={"query": "  Hello World  "})
 
     assert response.status_code == 200
-    assert response.json()["query"] == "Hello World"
+    body = response.json()
+    assert body["query"] == "Hello World"
+    assert body["query_was_masked"] is False
+
+
+# --- PII masking in the query --------------------------------------------------------
+
+
+def test_query_containing_pii_is_masked_before_search(client):
+    response = client.post(SEARCH_URL, json={"query": "What is the policy for SSN 123-45-6789?"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "123-45-6789" not in body["query"]
+    assert "[SSN_REDACTED]" in body["query"]
+    assert body["query_was_masked"] is True
+
+
+def test_original_query_pii_never_appears_anywhere_in_the_response(client):
+    response = client.post(SEARCH_URL, json={"query": "Email jane.doe@example.com about my account"})
+
+    assert "jane.doe@example.com" not in response.text
+    assert "[EMAIL_REDACTED]" in response.text
+
+
+def test_pii_in_uploaded_filename_never_appears_in_search_results(client):
+    from tests.conftest import _build_pdf
+
+    pdf_bytes = _build_pdf(["Hello World, this is page one of the policy document."])
+    upload_response = client.post(
+        UPLOAD_URL, files={"file": ("Customer 555-123-4567 statement.pdf", pdf_bytes, "application/pdf")}
+    )
+    assert upload_response.status_code == 201
+
+    response = client.post(SEARCH_URL, json={"query": "Hello World page one"})
+
+    assert response.status_code == 200
+    assert "555-123-4567" not in response.text
+    body = response.json()
+    assert any("[PHONE_REDACTED]" in r["source_filename"] for r in body["results"])
+
+
+def test_pii_protection_disabled_leaves_query_unmasked(client):
+    app.dependency_overrides[get_settings] = lambda: Settings(pii_protection_enabled=False)
+
+    response = client.post(SEARCH_URL, json={"query": "What is the policy for SSN 123-45-6789?"})
+
+    body = response.json()
+    assert "123-45-6789" in body["query"]
+    assert body["query_was_masked"] is False

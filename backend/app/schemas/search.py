@@ -44,6 +44,11 @@ class SearchResultItem(BaseModel):
 class SearchResponse(BaseModel):
     """Ranked semantic search results."""
 
-    query: str = Field(..., description="The (trimmed) query that was searched.")
+    query: str = Field(
+        ...,
+        description="The (trimmed) query that was searched. If PII was detected in the "
+        "submitted query, this is the masked version -- never the original.",
+    )
+    query_was_masked: bool = Field(..., description="Whether PII was detected and masked in the submitted query.")
     result_count: int = Field(..., ge=0, description="Number of results returned.")
     results: List[SearchResultItem] = Field(..., description="Results ordered by relevance, best match first.")

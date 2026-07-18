@@ -1,7 +1,7 @@
 """Centralized application configuration loaded from environment variables."""
 
 from functools import lru_cache
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -54,7 +54,25 @@ class Settings(BaseSettings):
     retrieval_top_k: int = 5
     min_relevance_score: float = 0.0
 
-    enable_pii_masking: bool = True
+    # Local, regex-based PII detection/masking (see app/services/privacy).
+    # Runs entirely on-device -- no cloud PII service, no external API call.
+    # This is a best-effort layer for common US financial identifiers, not
+    # a substitute for a professional PII/DLP tool or a compliance control;
+    # see the README's "Limitations" section before relying on it.
+    pii_protection_enabled: bool = True
+    # "mask" is the only mode implemented; a Literal makes an invalid value
+    # a hard config error (caught by Settings validation) rather than a
+    # silently-ignored typo.
+    pii_mode: Literal["mask"] = "mask"
+    # Bumped whenever detection/masking rules change materially. Chunks
+    # already indexed under a different (or missing) version are refused
+    # rather than silently mixed with chunks masked under the current
+    # rules -- see VectorStore's privacy-version check.
+    pii_redaction_version: str = "v1"
+    pii_mask_emails: bool = True
+    pii_mask_phones: bool = True
+    pii_mask_financial_identifiers: bool = True
+
     enable_cost_tracking: bool = True
     enable_latency_tracking: bool = True
 

@@ -1,5 +1,7 @@
 """Request/response schemas for the document ingestion API."""
 
+from typing import List
+
 from pydantic import BaseModel, Field
 
 
@@ -23,6 +25,12 @@ class DocumentUploadResponse(BaseModel):
     pages_with_text: int = Field(..., ge=0, description="Number of pages that contained extractable text.")
     indexed_chunk_count: int = Field(
         ..., ge=0, description="Number of chunks successfully upserted into the vector store."
+    )
+    pii_detected: bool = Field(..., description="Whether any PII entity was detected and masked in this document.")
+    pii_entity_count: int = Field(..., ge=0, description="Total number of PII entities masked across all pages.")
+    pii_categories: List[str] = Field(
+        default_factory=list,
+        description="Distinct PII categories detected (e.g. 'SSN', 'EMAIL'). Never the matched values themselves.",
     )
 
 
