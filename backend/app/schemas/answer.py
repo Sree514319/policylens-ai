@@ -79,6 +79,11 @@ class ModelResultSchema(BaseModel):
 class AnswerResponse(BaseModel):
     """Grounded answers from every requested model, evaluated independently."""
 
-    question: str
+    question: str = Field(
+        ...,
+        description="The question that was answered. If PII was detected in the submitted "
+        "question, this is the masked version -- never the original.",
+    )
+    query_was_masked: bool = Field(..., description="Whether PII was detected and masked in the submitted question.")
     evidence_count: int = Field(..., ge=0, description="Number of evidence chunks actually supplied to the models.")
     model_results: List[ModelResultSchema]
