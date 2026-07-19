@@ -1,10 +1,24 @@
 """Home page: project overview, backend health, and privacy notice."""
 
-import streamlit as st
+import sys
+from pathlib import Path
 
-from streamlit_app.api_client import get_api_client
-from streamlit_app.components.render import render_backend_status
-from streamlit_app.session_state import init_session_state
+# Streamlit execs each page as its own script -- this page needs the
+# same `streamlit_app`-importability fix as `app.py` independently (see
+# the full explanation there), since it can run on its own (e.g. under
+# test) without `app.py` having run first in the same process.
+_here = Path(__file__).resolve()
+for _candidate in (_here.parent, *_here.parents):
+    if (_candidate / "streamlit_app").is_dir():
+        if str(_candidate) not in sys.path:
+            sys.path.insert(0, str(_candidate))
+        break
+
+import streamlit as st  # noqa: E402
+
+from streamlit_app.api_client import get_api_client  # noqa: E402
+from streamlit_app.components.render import render_backend_status  # noqa: E402
+from streamlit_app.session_state import init_session_state  # noqa: E402
 
 init_session_state()
 
