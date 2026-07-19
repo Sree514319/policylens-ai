@@ -10,12 +10,13 @@ comparison of grounding, latency, and cost (never a single "accuracy" or
 > **Status:** 🚧 Active development. Project foundation, secure PDF
 > ingestion, deterministic text chunking, local-embedding vector search,
 > grounded multi-model (Claude + GPT) RAG answering, local PII
-> detection/masking, and transparent Claude-vs-OpenAI evaluation/
-> comparison are implemented; the frontend is not yet built. Real
-> Anthropic/OpenAI calls stay disabled until you explicitly opt in (see
+> detection/masking, transparent Claude-vs-OpenAI evaluation/comparison,
+> and a Streamlit frontend are implemented; Docker/deployment and
+> authentication are not yet built. Real Anthropic/OpenAI calls stay
+> disabled until you explicitly opt in (see
 > [Multi-Model RAG Answers](#10-multi-model-rag-answers)). **This is a
 > portfolio project, not a compliance product** — read
-> [PII Detection & Masking](#12-pii-detection--masking) before using
+> [PII Detection & Masking](#13-pii-detection--masking) before using
 > anything but synthetic/public sample documents.
 
 ---
@@ -121,6 +122,7 @@ wrapper.
 |-------------------------|--------------------------------------|
 | Backend API             | Python, FastAPI                     |
 | Frontend UI             | Streamlit                           |
+| Frontend↔Backend HTTP   | httpx (typed client, mocked in tests) |
 | LLM Providers           | Anthropic Claude API, OpenAI API    |
 | Vector Store            | ChromaDB                            |
 | PDF Parsing             | PyMuPDF                             |
@@ -170,8 +172,16 @@ policylens-ai/
 │   └── tests/                 # Backend unit/integration tests (pytest)
 ├── frontend/
 │   └── streamlit_app/
-│       ├── pages/            # Multi-page Streamlit views
-│       └── components/       # Reusable UI components
+│       ├── app.py             # Entrypoint: page config, session init, st.navigation
+│       ├── config.py          # Frontend-only settings (API base URL, timeouts)
+│       ├── api_client.py      # Typed httpx client -- the ONLY way this app talks to FastAPI
+│       ├── session_state.py   # Privacy-safe session-state helpers (no raw bytes/history)
+│       ├── styling.py         # Page config + the app's one static CSS injection
+│       ├── pages/             # One file per nav page (Home, Upload, Search, Ask, Compare, About)
+│       ├── components/
+│       │   ├── formatting.py  # Pure, Streamlit-free string formatting (unit-testable)
+│       │   └── render.py      # Streamlit rendering helpers (never unsafe_allow_html)
+│       └── tests/             # Frontend unit/integration tests (pytest + AppTest)
 ├── data/
 │   ├── sample_docs/          # Example policy PDFs for local dev/testing
 │   ├── vector_store/         # Local ChromaDB persistence (gitignored)
@@ -183,7 +193,7 @@ policylens-ai/
 ├── scripts/
 │   └── run_evaluation.py     # Offline benchmark runner (dry-run by default)
 ├── .env.example              # Environment variable template (no real secrets)
-├── pytest.ini                 # Pytest configuration (adds backend/ to path)
+├── pytest.ini                 # Pytest config (adds backend/ + frontend/ to path; both test suites run together)
 ├── requirements.txt           # Python dependencies
 └── README.md
 ```
@@ -217,7 +227,7 @@ This repository is being built incrementally. Planned phases:
       phone, IPv4, DOB, bank account, routing number), applied before
       preview generation, chunking, indexing, search, and RAG prompts;
       a versioned vector-store privacy check (see
-      [PII Detection & Masking](#12-pii-detection--masking) below).
+      [PII Detection & Masking](#13-pii-detection--masking) below).
 - [x] **Phase 7 — Model evaluation & comparison**: per-provider metrics
       (citation coverage, mean citation relevance, a lexical
       grounded-term ratio, latency, estimated cost), a Claude-vs-OpenAI
@@ -226,8 +236,12 @@ This repository is being built incrementally. Planned phases:
       dry-run-by-default benchmark script (see
       [Model Evaluation & Comparison](#11-model-evaluation--comparison)
       below).
-- [ ] **Phase 8 — Frontend**: Streamlit upload flow, chat interface,
-      model comparison view, metrics dashboard.
+- [x] **Phase 8 — Frontend**: a Streamlit app (Home, Upload Document,
+      Semantic Search, Ask Models, Compare Models, About & Limitations)
+      talking to the backend exclusively over HTTP through a typed
+      `httpx` client, with session-state privacy guarantees and no raw
+      HTML rendering of document/model content (see
+      [Frontend (Streamlit)](#12-frontend-streamlit) below).
 - [ ] **Phase 9 — Testing**: consolidated pytest coverage review across
       services and API routes.
 - [ ] **Phase 10 — Containerization & deployment**: Dockerfiles, compose
@@ -253,13 +267,15 @@ copy .env.example .env       # Windows
 # cp .env.example .env       # macOS/Linux
 # then fill in real API keys and settings in .env (never commit .env)
 
-# 5. Run the backend
-cd backend
-uvicorn app.main:app --reload
+# 5. Run the backend (from the repository root)
+.venv\Scripts\python.exe -m uvicorn app.main:app --app-dir backend --reload   # Windows
+# .venv/bin/python -m uvicorn app.main:app --app-dir backend --reload        # macOS/Linux
 # API docs available at http://127.0.0.1:8000/docs
 
-# 6. Run the frontend (once implemented)
-# streamlit run frontend/streamlit_app/app.py
+# 6. Run the frontend (in a second terminal, from the repository root)
+.venv\Scripts\python.exe -m streamlit run frontend/streamlit_app/app.py     # Windows
+# .venv/bin/python -m streamlit run frontend/streamlit_app/app.py           # macOS/Linux
+# UI available at http://localhost:8501 -- see Frontend (Streamlit) below
 ```
 
 ## 7. API Reference
@@ -315,7 +331,7 @@ metadata — never the full document text.
 - `filename` is sanitized (directory components and unsafe characters
   stripped) before being echoed back.
 - `preview` is capped at ~200 characters, and is generated **after** PII
-  masking (see [PII Detection & Masking](#12-pii-detection--masking)
+  masking (see [PII Detection & Masking](#13-pii-detection--masking)
   below) — the full extracted text, masked or not, is never returned in
   the response and never written to logs.
 - `chunk_count` and `pages_with_text` summarize the Phase 3 chunking pass
@@ -330,7 +346,7 @@ metadata — never the full document text.
   them.
 - `pii_detected`/`pii_entity_count`/`pii_categories` summarize what was
   masked — category names and a count only, never the matched values or
-  their positions. See [PII Detection & Masking](#12-pii-detection--masking).
+  their positions. See [PII Detection & Masking](#13-pii-detection--masking).
 
 **Error responses:**
 
@@ -390,7 +406,7 @@ ranked, citation-ready results.
 }
 ```
 
-- `query` is masked (see [PII Detection & Masking](#12-pii-detection--masking))
+- `query` is masked (see [PII Detection & Masking](#13-pii-detection--masking))
   **before** it is embedded/searched — if PII was detected in the
   submitted query, `query` here is the masked version and
   `query_was_masked` is `true`. The original, unmasked query is never
@@ -591,7 +607,7 @@ storing something to search against. Mitigations:
 - Only a capped excerpt (`EXCERPT_CHAR_LIMIT` = 300 characters) is ever
   returned by the search API — not the full stored chunk text.
 - No chunk text, query text, or excerpt is ever logged — only IDs,
-  counts, and durations (see [Ethical & Privacy Considerations](#14-ethical--privacy-considerations)).
+  counts, and durations (see [Ethical & Privacy Considerations](#15-ethical--privacy-considerations)).
 - Nothing here is sent to a third-party API: embedding happens locally,
   and storage is local disk.
 
@@ -684,7 +700,7 @@ are configured.
 > ⚠️ **Do not upload real customer or other PII-bearing documents** until
 > the Phase 6 privacy/PII-masking layer is implemented and enabled. Use
 > synthetic or public sample policy documents only (see
-> [Ethical & Privacy Considerations](#14-ethical--privacy-considerations)).
+> [Ethical & Privacy Considerations](#15-ethical--privacy-considerations)).
 
 ### Configuration (`Settings` / `.env`)
 
@@ -765,7 +781,7 @@ are configured.
 ```
 
 - `question` is masked **before** retrieval and before it's placed in any
-  provider prompt (see [PII Detection & Masking](#12-pii-detection--masking)).
+  provider prompt (see [PII Detection & Masking](#13-pii-detection--masking)).
   If PII was detected, `question` here is the masked version and
   `query_was_masked` is `true` — the original, unmasked question is never
   returned, logged, embedded, or sent to Anthropic/OpenAI.
@@ -986,7 +1002,7 @@ python scripts/run_evaluation.py --mode live \
 
 - Every question is masked through the same local PII pipeline as the
   API before retrieval/embedding/any provider call (see
-  [PII Detection & Masking](#12-pii-detection--masking)).
+  [PII Detection & Masking](#13-pii-detection--masking)).
 - `data/evaluation/results/` is git-ignored (only `.gitkeep` is tracked)
   — a benchmark run's output never gets committed by accident.
 - Live-mode results persist metrics only by default (status, latency,
@@ -1032,7 +1048,182 @@ python scripts/run_evaluation.py --mode live \
   itself makes** — its two opt-in gates prevent *accidental* use, not the
   underlying cost/network behavior once you've deliberately enabled it.
 
-## 12. PII Detection & Masking
+## 12. Frontend (Streamlit)
+
+A Streamlit application that is a **pure HTTP client** of the backend
+above: `frontend/streamlit_app/` never imports `app.*` (backend service
+or schema code) — it only talks to FastAPI through
+[`api_client.py`](#the-api-client), and holds no Anthropic/OpenAI API
+key of its own.
+
+```bash
+# From the repository root, with the backend already running separately:
+.venv\Scripts\python.exe -m streamlit run frontend/streamlit_app/app.py   # Windows
+# .venv/bin/python -m streamlit run frontend/streamlit_app/app.py        # macOS/Linux
+# UI available at http://localhost:8501
+```
+
+*(Screenshot placeholder — to be added once the frontend has a stable
+visual pass; see [Planned Features](#2-planned-features).)*
+
+### Navigation
+
+| Page | Purpose |
+|------|---------|
+| **Home** | Project overview, live backend connection/health check, the synthetic-documents-only privacy warning, and a plain-language workflow explanation. Loads and renders fully even if the backend is offline. |
+| **Upload Document** | PDF-only uploader → file name/size → an explicit "Upload and process" button (no auto-upload on file selection) → upload progress spinner → masking summary (detected flag, entity count, categories) → page/character/chunk/index counts → the **masked** preview only. The successfully uploaded document becomes the active document for the other pages. |
+| **Semantic Search** | Query input, an optional "scope to a document" selector (defaults to the active document), a `top_k` slider, the masked-query notice when PII was detected, ranked result cards (filename, page, relevance, capped excerpt), and explicit empty-result/error states. |
+| **Ask Models** | Question input, document scope selector, a Claude/OpenAI provider multiselect, evidence `top_k`, and one independent result card per model — success (full answer + citations + latency/tokens), insufficient-evidence, and error states are all visually distinct. A dedicated notice explains when `ALLOW_EXTERNAL_LLM_CALLS=false` is the reason every provider returned an error. A one-line summary flags a partial (some-succeeded-some-didn't) failure before the per-model cards. |
+| **Compare Models** | Runs exactly Claude and OpenAI once each (via a single `POST /api/v1/compare` call), shows both answers side by side, both providers' evaluation metrics (citation coverage, mean citation relevance, grounded-term ratio, latency, tokens, estimated cost) side by side, one latency bar chart (the only chart — a direct measurement, not a heuristic), and the comparison summary (agreement score, latency/cost deltas, status, notes). **Never renders a "winner" or an accuracy score** — see below. |
+| **About & Limitations** | Architecture summary, PII detection coverage/limitations, the external-provider privacy warning, evaluation-metric limitations, and the explicit non-compliance disclaimer — all in one place. |
+
+### The API client
+
+`api_client.py`'s `PolicyLensAPIClient` wraps `httpx` with:
+
+- A configurable base URL and separate connect/read timeouts (see
+  Configuration below).
+- Every method returns a typed `APIResult` (`ok`, `data`, `error`) —
+  **none of them raise** for an expected failure: connection refused,
+  timeout, malformed JSON, an unexpectedly-shaped 2xx body (e.g. a list
+  where a dict was expected — caught via `AttributeError` in addition to
+  `KeyError`/`TypeError`/`ValueError`), a malformed configured base URL
+  (`httpx.InvalidURL`, which is *not* an `httpx.HTTPError` subclass and
+  needs its own handling), or a 4xx/5xx response (including a non-JSON
+  body from a proxy/load balancer in front of the real backend) all
+  become a safe, typed `APIError` with a short, user-facing `message`.
+  Only `APIError.message` is ever shown; it is always either the
+  backend's own already-client-safe `detail` string or a generic,
+  status-code-only fallback — never a raw stack trace, exception repr,
+  raw response body, or other backend internal. An unrecognized
+  *additional* field in an otherwise-valid response is silently ignored
+  (forward-compatible), never a parse failure.
+- **Bounded retries only for `health()` and `search()`** (up to 3
+  attempts, backing off, on a *read* timeout only) — both are read-only
+  and side-effect-free. A connect-phase failure (`ConnectError` or
+  `ConnectTimeout`) is never retried for any method, since the backend
+  simply isn't reachable and retrying immediately just delays reporting
+  that.
+- **`upload_document()`, `ask()`, and `compare()` are never retried
+  automatically**, under any failure mode — a silently retried upload
+  could double-index a large transfer, and a silently retried
+  ask/compare could trigger a second, billed Anthropic/OpenAI request
+  behind a lost response.
+- No logging calls anywhere in this module — uploaded file bytes,
+  questions, answers, and citations are never written to a log by the
+  frontend.
+
+### Session-state privacy
+
+`session_state.py` only ever stores the backend's own already-masked,
+already-summarized upload result (document IDs, counts, masked preview,
+PII category names) — see `api_client.DocumentUploadResult`, which by
+construction has no field for raw bytes or unmasked text.
+
+- **Raw PDF bytes are never assigned to `st.session_state`.** They exist
+  only in a local variable on the Upload Document page, for the
+  duration of the "Upload and process" button's click handler, and are
+  passed straight through to `api_client.upload_document`.
+- **Questions/answers/search *results* (the API response data) are not
+  persisted.** Each page's result is held only within the Streamlit run
+  that produced it (via `st.form`, so adjusting an unrelated widget
+  doesn't wipe it prematurely) — navigating away or re-submitting clears
+  it rather than accumulating a history.
+- **Accurate-behavior note, not an overclaim:** the above covers
+  *response data* this app explicitly writes to `st.session_state`. It
+  does **not** mean the question/query text you typed disappears
+  immediately — like any web form, Streamlit's own `text_input`/
+  `text_area` widgets keep showing (and holding server-side) what was
+  typed until it's changed, its key changes, or "Clear session" is used.
+  This is standard Streamlit/browser-form behavior, not something this
+  app suppresses without hurting usability.
+- **Switching documents fully replaces the active one**, including
+  resetting document-scoped widgets. `set_active_document()` is a plain
+  assignment, never a merge, so a newly uploaded or newly selected
+  document can never accidentally keep a stale `document_id` from a
+  previous selection alongside it. A deduplicated, most-recent-first
+  history of this session's uploads backs the document-scope selectors
+  on Search/Ask/Compare, and a "session generation" counter
+  (`session_state.widget_key()`) gives every document-scoped widget a
+  fresh key whenever the active document actually changes, so a
+  previously-chosen scope (or a previously-selected file in the
+  uploader) doesn't linger after the switch.
+- **"Clear session"** (sidebar, every page) resets the active document,
+  its history, *and* bumps the same session-generation counter — so the
+  file uploader and every form's inputs (query/question text, scope
+  selection, provider selection, `top_k`) reset to their defaults too,
+  not just the document reference. It cannot and does not delete
+  anything from the backend's vector store — it only forgets what this
+  browser session remembers locally.
+
+### No raw HTML rendering of document/model content
+
+`components/render.py` never passes `unsafe_allow_html=True`. Model
+answers and citation/search excerpts are rendered with `st.text` (plain,
+preformatted — zero HTML or Markdown interpretation); values interpolated
+into `st.markdown` are restricted to backend-sanitized character sets
+(e.g. a filename, which the backend already strips to
+`[A-Za-z0-9._- ]`) or fixed-vocabulary backend-generated strings (status
+labels, comparison notes). The one `unsafe_allow_html=True` in the whole
+app (`styling.py`) injects a hardcoded, static CSS string with no
+interpolated content at all.
+
+### Configuration (`.env`)
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `POLICYLENS_API_BASE_URL` | `http://localhost:8000` | Base URL the frontend uses to reach the FastAPI backend. Validated: must start with `http://`/`https://` and contain no control characters, or the default is used instead. |
+| `FRONTEND_REQUEST_TIMEOUT_SECONDS` | `30` | Read/write/pool timeout for the frontend's HTTP calls. Must parse as a positive number, or the default is used instead. The connect timeout is capped at `min(5, this value)`. |
+
+### Testing
+
+Frontend tests live in `frontend/streamlit_app/tests/` and run as part
+of the same `pytest` invocation as the backend suite (see `pytest.ini`).
+Every HTTP call to the *backend* is mocked via `httpx.MockTransport` —
+no frontend test ever calls a live LLM provider or a real backend.
+(One specific test is a deliberate, narrow exception: it starts a real
+local `streamlit run` subprocess, exactly matching the documented run
+command, and connects to it over loopback to prove the app is actually
+reachable end-to-end -- not just importable. No external network address
+or third-party service is ever contacted by any frontend test.) Coverage
+includes: `api_client.py` success/error/timeout/invalid-JSON/malformed
+-shape/non-JSON-error-body/`InvalidURL`-configuration-error handling for
+every method, exact multipart upload request construction, correct
+`/api/v1/...` path construction across base-URL variants (with/without
+a trailing slash), proof that uploads are never retried while
+`health()`/`search()` are (bounded, read-timeout-only), no
+`ResourceWarning` across many sequential requests, `config.py`'s
+base-URL/timeout validation and safe fallback, `session_state.py`'s
+replace-not-merge, no-raw-bytes, and session-generation widget-reset
+guarantees (including a source-level check that every page actually
+wires `widget_key()` into its stateful inputs), `components/
+formatting.py`'s null/NaN/infinity-handling and "never renders a fake
+zero" behavior, a static + `AppTest`-runtime proof that
+`unsafe_allow_html` is never used for document/model content, an inline
+(not just collapsed-notes) heuristic-disclaimer visibility check next to
+the ratio metrics, and `AppTest`-based integration tests: the full app
+loads, every page loads with the backend offline, page paths resolve
+relative to the entrypoint regardless of the process's working
+directory, a successful upload updates session state with no raw bytes
+retained anywhere and resets the file-uploader widget, switching to a
+different document resets a manually-chosen scope selection, masked
+-query notices render, mixed success/error Ask Models results render
+(including the external-calls-disabled explanation), the Compare Models
+page never renders "winner"/"accuracy" language and renders null
+metrics as "Not available" rather than a fake zero, no page uses
+`st.cache_data`/`st.cache_resource`, the installed Streamlit version's
+API surface matches what this app actually calls, and the "Clear
+session" button clears both state and widget values. A separate
+backend-suite test (`test_frontend_api_client_schema_compatibility.py`)
+constructs real backend Pydantic response objects (including with
+unknown extra fields, to prove forward compatibility) and confirms the
+frontend's dataclasses parse them field-for-field, and that the
+frontend's provider labels and `top_k` bounds match the backend's real
+constraints — the one place a test (not application code) intentionally
+imports both sides, specifically to prove the wire-format contract
+holds.
+
+## 13. PII Detection & Masking
 
 Before any extracted text is previewed, chunked, embedded, indexed,
 searched, or sent to an external LLM provider, it passes through a
@@ -1184,7 +1375,7 @@ is the deliberately safe, documented path.
   documents with this project — never real customer data — until (if
   ever) a more rigorous PII/DLP solution is integrated.
 
-## 13. Testing
+## 14. Testing
 
 The backend test suite uses `pytest` and FastAPI's `TestClient`. All test
 PDFs (including a password-protected one) are generated in memory with
@@ -1313,7 +1504,7 @@ refusing independently, and a repository-hygiene check that
 `ModelAnswer`/`Citation` objects — no live API calls, no real API keys,
 no model downloads.
 
-## 14. Ethical & Privacy Considerations
+## 15. Ethical & Privacy Considerations
 
 - **No real API keys or secrets are ever committed.** `.env` is
   git-ignored; only `.env.example` (placeholder variable names) is
@@ -1321,7 +1512,7 @@ no model downloads.
 - **Sensitive data masking is a first-class feature, not an add-on.**
   Account numbers, SSNs, emails, and similar identifiers are detected
   and redacted locally — see
-  [PII Detection & Masking](#12-pii-detection--masking) — before content
+  [PII Detection & Masking](#13-pii-detection--masking) — before content
   is chunked, indexed, displayed, logged, or sent to any third-party LLM
   provider. This is a best-effort regex layer, not a compliance
   guarantee (no HIPAA/PCI-DSS/GDPR/GLBA claim is made).
@@ -1357,10 +1548,10 @@ no model downloads.
   are requested.
   **Do not upload real customer or other sensitive documents.** The
   local PII masking layer (see
-  [PII Detection & Masking](#12-pii-detection--masking)) is a best-effort
+  [PII Detection & Masking](#13-pii-detection--masking)) is a best-effort
   regex-based safeguard, not a regulatory-compliance guarantee — use
   synthetic or public sample policy documents only.
 
-## 15. License
+## 16. License
 
 See [LICENSE](./LICENSE).
