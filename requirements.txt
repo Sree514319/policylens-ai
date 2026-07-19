@@ -4,7 +4,14 @@ uvicorn[standard]>=0.32.0
 python-multipart>=0.0.12
 
 # --- Frontend ---
-streamlit>=1.39.0
+# >=1.59.0: this is the actual floor exercised by frontend/streamlit_app's
+# test suite and the API surface it uses -- st.navigation/st.Page (added
+# 1.36), st.container(border=True) (added 1.28), and the newer
+# st.bar_chart(x_label=/y_label=) and st.button(width=) keyword APIs
+# (added in later 1.4x/1.5x releases) all need a floor at least this
+# recent; pinning to exactly what's tested avoids a "works here, breaks
+# on a fresh 1.39 install" gap.
+streamlit>=1.59.0
 
 # --- LLM providers ---
 anthropic>=0.40.0
