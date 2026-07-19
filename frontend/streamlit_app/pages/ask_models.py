@@ -5,16 +5,35 @@ keeps showing what was typed until it's changed, its key changes, or
 "Clear session" is used -- see `session_state.py`'s module docstring.
 """
 
-import streamlit as st
+import sys
+from pathlib import Path
 
-from streamlit_app.api_client import get_api_client
-from streamlit_app.components.render import (
+# Streamlit execs each page as its own script -- this page needs the
+# same `streamlit_app`-importability fix as `app.py` independently (see
+# the full explanation there), since it can run on its own (e.g. under
+# test) without `app.py` having run first in the same process.
+_here = Path(__file__).resolve()
+for _candidate in (_here.parent, *_here.parents):
+    if (_candidate / "streamlit_app").is_dir():
+        if str(_candidate) not in sys.path:
+            sys.path.insert(0, str(_candidate))
+        break
+
+import streamlit as st  # noqa: E402
+
+from streamlit_app.api_client import get_api_client  # noqa: E402
+from streamlit_app.components.render import (  # noqa: E402
     render_api_error,
     render_masked_query_notice,
     render_model_result,
     render_partial_failure_notice,
 )
-from streamlit_app.session_state import get_active_document, get_document_history, init_session_state, widget_key
+from streamlit_app.session_state import (  # noqa: E402
+    get_active_document,
+    get_document_history,
+    init_session_state,
+    widget_key,
+)
 
 _EXTERNAL_CALLS_DISABLED_MARKER = "ALLOW_EXTERNAL_LLM_CALLS"
 

@@ -5,7 +5,10 @@ Every HTTP call these pages would make is mocked via
 real network, and never call a live LLM provider.
 """
 
+from pathlib import Path
+
 import httpx
+import pytest
 from streamlit.testing.v1 import AppTest
 
 from streamlit_app.tests.sample_payloads import (
@@ -560,3 +563,62 @@ def test_streamlit_run_from_the_repository_root_serves_the_app(monkeypatch):
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait(timeout=10)
+
+
+_STREAMLIT_APP_DIR = Path(__file__).resolve().parents[1]
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_ENTRYPOINT_SCRIPTS = [
+    _STREAMLIT_APP_DIR / "app.py",
+    *sorted(p for p in (_STREAMLIT_APP_DIR / "pages").glob("*.py") if p.name != "__init__.py"),
+]
+
+
+@pytest.mark.parametrize(
+    "entrypoint", _ENTRYPOINT_SCRIPTS, ids=lambda p: p.relative_to(_STREAMLIT_APP_DIR).as_posix()
+)
+def test_entrypoint_scripts_execute_cleanly_in_a_genuinely_isolated_subprocess(entrypoint):
+    # The subprocess check above proves the documented `streamlit run`
+    # command starts a real server and serves the static app shell -- but
+    # Streamlit only execs the target script lazily, per browser session,
+    # so that alone never actually proves the script runs without raising
+    # (this was verified directly: the original broken app.py passed that
+    # exact check with zero visible error, since no session ever
+    # connected). Every in-process AppTest-based test above is similarly
+    # blind to this bug class, because pytest.ini's `pythonpath = backend
+    # frontend` patches `sys.path` for the pytest process itself and is
+    # never inherited by a subprocess -- it can't mask a real `sys.path`
+    # gap for an in-process test, but that also means it can't be trusted
+    # to prove one doesn't exist.
+    #
+    # This test runs `AppTest.from_file(entrypoint)` in its own freshly
+    # spawned subprocess with `PYTHONPATH` explicitly stripped, from the
+    # repository root (matching the documented command's invocation
+    # location) -- the same mechanism that originally reproduced
+    # `ModuleNotFoundError: No module named 'streamlit_app'` during
+    # investigation, run here against every `st.Page` module as well as
+    # app.py, since Streamlit execs each page as its own independent
+    # script.
+    import os
+    import subprocess
+    import sys
+
+    runner = Path(__file__).resolve().parent / "_isolated_apptest_runner.py"
+    env = os.environ.copy()
+    env.pop("PYTHONPATH", None)
+
+    result = subprocess.run(
+        [sys.executable, str(runner), str(entrypoint)],
+        cwd=str(_REPO_ROOT),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert result.returncode == 0, (
+        f"{entrypoint} failed to execute cleanly in an isolated subprocess "
+        f"(this is exactly the failure mode of the ModuleNotFoundError "
+        f"regression this test guards against):\n"
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+    assert "ISOLATED_APPTEST_OK" in result.stdout
